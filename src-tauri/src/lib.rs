@@ -12,6 +12,7 @@ use tauri::{
 
 mod assist;
 mod claude;
+mod codex;
 mod desktop;
 mod input;
 mod lang;
@@ -24,12 +25,15 @@ const DEBUG: &str = "debug";
 
 /// 不启动宠物、只做一件事就退出的命令行用法。返回 Some(退出码) 表示已经处理了。
 pub fn cli(args: &[String]) -> Option<i32> {
-    if args.iter().any(|a| a == "--clawd-pet-hook") {
+    if args.iter().any(|a| a == "--clawd-pet-hook" || a == codex::MARKER) {
         return Some(claude::hook_main(args));
     }
     if args.iter().any(|a| a == "--remove-claude-hooks") {
         // 卸载程序调用：把装进 Claude Code 设置里的 hooks 删掉
         return Some(if claude::uninstall().is_ok() { 0 } else { 1 });
+    }
+    if args.iter().any(|a| a == "--remove-codex-hooks") {
+        return Some(if codex::uninstall().is_ok() { 0 } else { 1 });
     }
     None
 }
@@ -285,6 +289,26 @@ fn cc_install(token: State<BridgeToken>, permission: bool) -> Result<(), String>
 #[tauri::command]
 fn cc_uninstall() -> Result<(), String> {
     claude::uninstall()
+}
+
+#[tauri::command]
+fn codex_status(bridge: State<Arc<claude::Bridge>>, token: State<BridgeToken>) -> CcStatus {
+    CcStatus {
+        hooks: codex::status(&token.0),
+        port: claude::PORT,
+        bridge_error: bridge.error.lock().unwrap().clone(),
+        last_event: bridge.last_codex_event.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+#[tauri::command]
+fn codex_install(token: State<BridgeToken>, permission: bool) -> Result<(), String> {
+    codex::install(&token.0, permission)
+}
+
+#[tauri::command]
+fn codex_uninstall() -> Result<(), String> {
+    codex::uninstall()
 }
 
 /// 权限气泡上的按钮：allow / deny / pass（交还终端）
@@ -575,6 +599,9 @@ pub fn run() {
             cc_status,
             cc_install,
             cc_uninstall,
+            codex_status,
+            codex_install,
+            codex_uninstall,
             cc_decide
         ])
         .setup(|app| {
@@ -586,6 +613,10 @@ pub fn run() {
             let st = claude::status(&token);
             if st.installed && !st.current {
                 let _ = claude::install(&token, st.permission);
+            }
+            let st = codex::status(&token);
+            if st.installed && !st.current {
+                let _ = codex::install(&token, st.permission);
             }
             app.manage(bridge);
             app.manage(BridgeToken(token));

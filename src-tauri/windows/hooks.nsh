@@ -2,4 +2,5 @@
 ; otherwise Claude Code would keep trying to run a program that no longer exists.
 !macro NSIS_HOOK_PREUNINSTALL
   ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --remove-claude-hooks'
+  ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --remove-codex-hooks'
 !macroend

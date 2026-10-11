@@ -389,9 +389,13 @@ function broomProps(pet: Pet, skin: Skin, swing: number, out: Prop[]) {
 /** 脸红：每只眼睛下面一小块，稍微偏外 */
 function blushProps(skin: Skin, out: Prop[]) {
   for (const part of skin.parts) {
-    if (part.role !== 'eye' || part.side === 0) continue;
+    if (part.role !== 'eye') continue;
     const [x, y, w, h] = part.rect;
-    const cx = (x + w / 2) * 3 + part.side * 2;
+    // Faces can sit to one side of the body (for example the onigiri).
+    // Place cheeks relative to the face, not the body's center line.
+    const faceCenter = skin.eyeBox ? skin.eyeBox.x + skin.eyeBox.w / 2 : skin.grid[0] / 2;
+    const side = Math.sign(x + w / 2 - faceCenter);
+    const cx = (x + w / 2) * 3 + side * 2;
     out.push({
       x: (cx - 2.5) * PX,
       y: ((y + h) * 3 + 1) * PX,
@@ -426,7 +430,7 @@ export function computePose(pet: Pet, skin: Skin): Pose {
 
   switch (pet.mode) {
     case 'idle': {
-      const breath = Math.sin(t * 2.4) > 0.55 ? 0.5 : 0;
+      const breath = skin.pixelArt ? (Math.sin(t * 2.4) > 0.55 ? 0.5 : 0) : (1 + Math.sin(t * 2.4)) * 0.18;
       crouchBy(breath);
       if (pet.dizzy > 0) {
         torso.dx = Math.sin(t * 7) * 0.5;
@@ -437,7 +441,7 @@ export function computePose(pet: Pet, skin: Skin): Pose {
     case 'walk': {
       const speed = pet.side === 'floor' ? pet.tuning.walkSpeed : pet.tuning.climbSpeed;
       const phase = (t * speed) / (3 * pet.cell);
-      const bob = Math.sin(phase * Math.PI * 4) > 0 ? 0.5 : 0;
+      const bob = skin.pixelArt ? (Math.sin(phase * Math.PI * 4) > 0 ? 0.5 : 0) : (1 + Math.sin(phase * Math.PI * 4)) * 0.2;
       torso.dy = -bob;
       each((pp, part) => {
         if (part.role === 'leg') {
@@ -742,8 +746,11 @@ export function computePose(pet: Pet, skin: Skin): Pose {
 
   each((pp, part) => {
     if (part.role !== 'eye') return;
-    pp.dx += look.x * eyeLookScale;
-    pp.dy += look.y * 0.6 * eyeLookScale;
+    // 闭眼曲线保留安静的表情，跟随躯干动作，不当作瞳孔移动或压扁。
+    if (part.shape === 'eyelid') return;
+    const gaze = part.gaze ?? 1;
+    pp.dx += look.x * eyeLookScale * gaze;
+    pp.dy += look.y * 0.6 * eyeLookScale * gaze;
     pp.sy *= eyeSquint;
   });
 

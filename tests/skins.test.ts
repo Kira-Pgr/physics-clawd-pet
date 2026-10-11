@@ -26,8 +26,8 @@ const run = (pet: Pet, seconds: number) => {
 };
 
 describe('皮肤注册表', () => {
-  it('收进了 Clawd 和 Dots，默认皮肤排第一', () => {
-    expect(SKINS.map((s) => s.id)).toEqual(expect.arrayContaining(['clawd', 'dots']));
+  it('收进了 Clawd 和四款 Dots，默认皮肤排第一', () => {
+    expect(SKINS.map((s) => s.id)).toEqual(expect.arrayContaining(['clawd', 'dots', 'dots-green', 'dots-yellow', 'dots-pink']));
     expect(SKINS[0].id).toBe(DEFAULT_SKIN);
   });
 
@@ -92,6 +92,26 @@ describe('皮肤注册表', () => {
     expect(findSkin(undefined).id).toBe(DEFAULT_SKIN);
     expect(findSkin('dots').id).toBe('dots');
   });
+
+  it('粉色 Dots 保持闭眼曲线，呼吸继续；睁眼角色仍跟着光标看和眨眼', () => {
+    const snapshots = (skin: Skin) => {
+      const pet = makePet(skin);
+      pet.t = 0;
+      pet.cursor = { x: pet.pos.x - 300, y: pet.pos.y };
+      const first = computePose(pet, skin);
+      pet.t = 1.2;
+      pet.cursor = { x: pet.pos.x + 300, y: pet.pos.y };
+      const second = computePose(pet, skin);
+      const eyes = (pose: ReturnType<typeof computePose>) =>
+        skin.parts.flatMap((part, i) => part.role === 'eye' ? [pose.parts[i]] : []);
+      return { first, second, eyes };
+    };
+    const pink = snapshots(findSkin('dots-pink'));
+    expect(pink.eyes(pink.first)).toEqual(pink.eyes(pink.second));
+    expect(pink.first.torso).not.toEqual(pink.second.torso);
+    const green = snapshots(findSkin('dots-green'));
+    expect(green.eyes(green.first)).not.toEqual(green.eyes(green.second));
+  });
 });
 
 describe.each(SKINS.map((s) => [s.id, s] as const))('皮肤 %s', (_id, skin) => {
@@ -129,17 +149,23 @@ describe.each(SKINS.map((s) => [s.id, s] as const))('皮肤 %s', (_id, skin) => 
     expect(bottom).toBeCloseTo(skin.grid[1]);
   });
 
-  it('腮红在眼睛下面', () => {
+  it('腮红在各自的眼睛下面，也支持高低不对称的眼睛', () => {
     if (!skin.eyeBox) return;
     const pet = makePet(skin);
     pet.perform('petted');
     run(pet, 0.2);
     const blush = computePose(pet, skin).props.filter((p) => p.rgba === BLUSH);
     expect(blush.length).toBe(2);
-    const eyeBottom = skin.eyeBox.y + skin.eyeBox.h;
-    for (const b of blush) {
+    const eyes = skin.parts.filter((part) => part.role === 'eye');
+    for (const [i, b] of blush.entries()) {
+      const eyeBottom = eyes[i].rect[1] + eyes[i].rect[3];
       expect(b.y).toBeGreaterThanOrEqual(eyeBottom);
       expect(b.y).toBeLessThan(eyeBottom + 1);
+    }
+    const faceCenter = skin.eyeBox.x + skin.eyeBox.w / 2;
+    for (const [i, b] of blush.entries()) {
+      const eyeCenter = eyes[i].rect[0] + eyes[i].rect[2] / 2;
+      expect(Math.sign(b.x + b.w / 2 - eyeCenter)).toBe(Math.sign(eyeCenter - faceCenter));
     }
   });
 });

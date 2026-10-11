@@ -11,7 +11,7 @@
       <button role="tab" data-tab="todo" data-t="tabTodo"></button>
       <button role="tab" data-tab="calendar" data-t="tabCalendar"></button>
       <button role="tab" data-tab="remind" data-t="tabRemind"></button>
-      <button role="tab" data-tab="claude">Claude Code</button>
+      <button role="tab" data-tab="claude">Claude Code / Codex</button>
     </nav>
 
     <main>
@@ -81,7 +81,10 @@
       </section>
 
       <section id="tab-claude" hidden>
-        <h2 data-t="ccLink"></h2>
+        <label class="switch"><span data-t="ccProvider"></span>
+          <select id="ccProvider"><option value="claude">Claude Code</option><option value="codex">Codex</option></select>
+        </label>
+        <h2 id="ccLink" data-t="ccLink"></h2>
         <p id="ccState" class="cc-state"></p>
         <div class="row-actions">
           <button id="ccToggle" class="primary" type="button"></button>
@@ -111,7 +114,7 @@
           <button type="button" data-cc-test="perm" data-t="ccTestPerm"></button>
           <button type="button" data-cc-test="done" data-t="ccTestDone"></button>
         </div>
-        <p class="hint" data-t="ccTestHint"></p>
+        <p id="ccTestHint" class="hint" data-t="ccTestHint"></p>
       </section>
     </main>
     <footer id="note" class="note"></footer>

@@ -5,6 +5,9 @@ import type { AgentMood } from '../engine/pet';
 
 /** 原生侧精简过的 hook 事件（见 src-tauri/src/claude.rs 的 summarize） */
 export interface CcEvent {
+  /** Missing in existing Claude hooks; Codex ids are namespaced by the bridge. */
+  provider?: 'claude' | 'codex';
+  turn_id?: string;
   event: string;
   session_id: string;
   cwd: string;
@@ -35,13 +38,13 @@ export interface CcPermission extends CcEvent {
 
 export type Reaction =
   /** 一轮干完了。turnMs：这一轮用了多久；tools：用了几次工具 */
-  | { kind: 'done'; session: string; cwd: string; turnMs: number; tools: number; last?: string; window?: number }
+  | { kind: 'done'; session: string; cwd: string; turnMs: number; tools: number; last?: string; window?: number; provider?: 'claude' | 'codex' }
   /** 工具失败 / API 报错 */
   | { kind: 'error'; session: string; message: string }
   | { kind: 'subagent-start'; id: string }
   | { kind: 'subagent-stop'; id: string }
   /** Claude 在等你（权限提示的通知；没装权限 hook 时靠它） */
-  | { kind: 'attention'; session: string; cwd: string; message: string; window?: number }
+  | { kind: 'attention'; session: string; cwd: string; message: string; window?: number; provider?: 'claude' | 'codex' }
   /**
    * 这个会话往前走了：挂着的权限请求肯定已经处理过了。
    * 带 tool 的只说明这一个工具跑完了（并行的其他工具可能还在等批准）
@@ -49,6 +52,7 @@ export type Reaction =
   | { kind: 'progress'; session: string; tool_name?: string; tool?: string };
 
 interface Session {
+  provider?: 'claude' | 'codex';
   id: string;
   cwd: string;
   mood: AgentMood;
@@ -83,7 +87,7 @@ export class AgentTracker {
     }
     let s = this.sessions.get(id);
     if (!s) {
-      s = { id, cwd: e.cwd, mood: 'idle', before: 'idle', turnStart: null, tools: 0, last: e.t, subagents: new Set() };
+      s = { id, provider: e.provider, cwd: e.cwd, mood: 'idle', before: 'idle', turnStart: null, tools: 0, last: e.t, subagents: new Set() };
       this.sessions.set(id, s);
     }
     s.last = Math.max(s.last, e.t);
@@ -112,7 +116,7 @@ export class AgentTracker {
         break;
       case 'Notification':
         if (e.notification_type === 'permission_prompt') {
-          out.push({ kind: 'attention', session: id, cwd: s.cwd, message: e.message ?? '', window: e.window });
+          out.push({ kind: 'attention', session: id, cwd: s.cwd, message: e.message ?? '', window: e.window, ...(s.provider ? { provider: s.provider } : {}) });
         }
         break;
       case 'SubagentStart':
@@ -133,12 +137,13 @@ export class AgentTracker {
         if (s.mood === 'compacting') s.mood = s.turnStart !== null ? s.before : 'idle';
         break;
       case 'Stop':
+      case 'Interrupt':
       case 'StopFailure': {
         const turnMs = s.turnStart !== null ? e.t - s.turnStart : 0;
         out.push({ kind: 'progress', session: id });
         if (e.event === 'Stop') {
-          out.push({ kind: 'done', session: id, cwd: s.cwd, turnMs, tools: s.tools, last: e.last, window: e.window });
-        } else {
+          out.push({ kind: 'done', session: id, cwd: s.cwd, turnMs, tools: s.tools, last: e.last, window: e.window, ...(s.provider ? { provider: s.provider } : {}) });
+        } else if (e.event === 'StopFailure') {
           out.push({ kind: 'error', session: id, message: e.error ?? '' });
         }
         // 还没收工的子代理（比如被中断了）也一起散了
@@ -167,9 +172,9 @@ export class AgentTracker {
   }
 
   /** 给小助手窗口显示的会话列表 */
-  list(): { id: string; cwd: string; mood: AgentMood; last: number; subagents: number }[] {
+  list(): { id: string; provider?: 'claude' | 'codex'; cwd: string; mood: AgentMood; last: number; subagents: number }[] {
     return [...this.sessions.values()]
-      .map((s) => ({ id: s.id, cwd: s.cwd, mood: s.mood, last: s.last, subagents: s.subagents.size }))
+      .map((s) => ({ id: s.id, provider: s.provider, cwd: s.cwd, mood: s.mood, last: s.last, subagents: s.subagents.size }))
       .sort((a, b) => b.last - a.last);
   }
 }

@@ -8,9 +8,9 @@ import { pick } from '../assistant/i18n';
 /** 只在浏览器预览里会看到的提示 */
 const PREVIEW_NO_LINK = () =>
   pick({
-    zh: '浏览器预览里不能联动 Claude Code',
-    ja: 'ブラウザのプレビューではClaude Codeと連携できません',
-    en: 'Claude Code linking is not available in the browser preview',
+    zh: '浏览器预览里不能联动 Claude Code / Codex',
+    ja: 'ブラウザのプレビューではClaude Code / Codexと連携できません',
+    en: 'Claude Code / Codex linking is not available in the browser preview',
   });
 
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -189,6 +189,27 @@ export async function ccUninstall(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import('@tauri-apps/api/core');
   await invoke('cc_uninstall');
+}
+
+export async function codexStatus(): Promise<CcStatus> {
+  if (!isTauri) {
+    const status = await ccStatus();
+    return { ...status, hooks: { ...status.hooks, settings_path: '~/.codex/hooks.json' } };
+  }
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<CcStatus>('codex_status');
+}
+
+export async function codexInstall(permission: boolean): Promise<void> {
+  if (!isTauri) throw new Error(PREVIEW_NO_LINK());
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('codex_install', { permission });
+}
+
+export async function codexUninstall(): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('codex_uninstall');
 }
 
 /** 权限气泡上的选择：allow / deny / pass（交还终端） */
