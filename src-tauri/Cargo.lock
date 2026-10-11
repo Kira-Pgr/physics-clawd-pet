@@ -332,6 +332,7 @@ dependencies = [
 name = "clawd-pet"
 version = "1.0.0"
 dependencies = [
+ "block2",
  "dispatch2",
  "libc",
  "objc2",

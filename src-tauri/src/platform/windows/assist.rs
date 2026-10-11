@@ -18,8 +18,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINF
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_FILEMUSTEXIST, SIGDN_FILESYSPATH};
 
-use crate::assist::MAX_BODY;
-use crate::lang::{colon, tr};
+use crate::assist::{
+    bad_url, cannot_reach, http_status, net_error, too_large, unsupported_scheme, NetError, MAX_BODY,
+};
+use crate::lang::tr;
 
 /// 距离上一次键盘/鼠标操作多少毫秒（整个系统的，不只是本程序）
 pub fn idle_ms() -> u64 {
@@ -49,19 +51,14 @@ impl Drop for Handle {
 fn last_error(what: &str) -> String {
     let code = unsafe { windows::Win32::Foundation::GetLastError() }.0;
     let why = match code {
-        12002 => tr("超时", "タイムアウトしました", "timed out"),
-        12007 => tr("域名解析失败", "ホスト名を解決できませんでした", "could not resolve the host name"),
-        12029 | 12030 => tr("连接失败", "接続できませんでした", "connection failed"),
-        12157 | 12175 => tr("安全连接（TLS）失败", "セキュア接続（TLS）に失敗しました", "secure connection (TLS) failed"),
-        12005 | 12006 => tr("地址格式不对", "URLの形式が正しくありません", "invalid URL"),
-        _ => tr(&format!("错误码 {code}"), &format!("エラーコード {code}"), &format!("error code {code}")),
+        12002 => NetError::Timeout,
+        12007 => NetError::Dns,
+        12029 | 12030 => NetError::Connect,
+        12157 | 12175 => NetError::Tls,
+        12005 | 12006 => NetError::BadUrl,
+        _ => NetError::Code(code as i64),
     };
-    format!("{what}{}{why}", colon())
-}
-
-/// 地址格式错误（解析不了）
-fn bad_url() -> String {
-    tr("地址格式不对", "URLの形式が正しくありません", "Invalid URL")
+    net_error(what, why)
 }
 
 fn read_failed() -> String {
@@ -82,11 +79,7 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
     unsafe { WinHttpCrackUrl(&wide, 0, &mut parts) }.map_err(|_| bad_url())?;
     let secure = parts.nScheme == WINHTTP_INTERNET_SCHEME_HTTPS;
     if !secure && parts.nScheme != WINHTTP_INTERNET_SCHEME_HTTP {
-        return Err(tr(
-            "只支持 http / https / webcal 地址",
-            "http / https / webcal のURLのみ対応しています",
-            "Only http / https / webcal URLs are supported",
-        ));
+        return Err(unsupported_scheme());
     }
     let slice = |p: PWSTR, n: u32| -> &[u16] {
         if p.is_null() {
@@ -118,7 +111,7 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
         let _ = WinHttpSetTimeouts(session.0, 10_000, 10_000, 15_000, 30_000);
         let connect = Handle(WinHttpConnect(session.0, &host, parts.nPort, 0));
         if connect.0.is_null() {
-            return Err(last_error(&tr("连不上服务器", "サーバーに接続できません", "Could not reach the server")));
+            return Err(last_error(&cannot_reach()));
         }
         let flags = if secure { WINHTTP_FLAG_SECURE } else { WINHTTP_OPEN_REQUEST_FLAGS(0) };
         let request = Handle(WinHttpOpenRequest(
@@ -153,11 +146,7 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
         )
         .map_err(|_| last_error(&tr("读取状态码失败", "ステータスコードを読み取れません", "Could not read the status code")))?;
         if status != 200 {
-            return Err(tr(
-                &format!("服务器返回 HTTP {status}"),
-                &format!("サーバーが HTTP {status} を返しました"),
-                &format!("The server returned HTTP {status}"),
-            ));
+            return Err(http_status(status as i64));
         }
 
         let mut body: Vec<u8> = Vec::new();
@@ -174,7 +163,7 @@ pub fn http_get(url: &str) -> Result<Vec<u8>, String> {
                 .map_err(|_| last_error(&read_failed()))?;
             body.truncate(start + read as usize);
             if body.len() > MAX_BODY {
-                return Err(tr("日历文件太大了", "カレンダーファイルが大きすぎます", "The calendar file is too large"));
+                return Err(too_large());
             }
         }
         Ok(body)

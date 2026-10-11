@@ -39,13 +39,14 @@ windows = { version = "0.62", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # 和 Tauri 自己用的是同一套（Cargo.lock 里已经有了），不额外下载
+block2 = "0.6"
 dispatch2 = "0.3"
 libc = "0.2"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSScreen", "NSWindow"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFLocale", "CFNumber", "CFString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSPanel", "NSOpenPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFLocale", "CFNumber", "CFString", "CFStringEncodingExt"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDirectDisplay", "CGEvent", "CGEventSource", "CGEventTypes", "CGGeometry", "CGWindow"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSData", "NSError", "NSString", "NSURL", "NSURLRequest", "NSURLResponse", "NSURLSession"] }
 
 [profile.release]
 codegen-units = 1
