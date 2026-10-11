@@ -1,6 +1,12 @@
 node_modules/
 artifacts/
 dist/
+# 宣传视频（不开源）
+promo.html
+src/promo/
+scripts/render-promo.mjs
+vite.promo.config.ts
+dist-promo/
 src-tauri/target/
 src-tauri/gen/schemas/
 # 由 scripts/make-icon.mjs 生成，`npm run icon` 会重新生成
