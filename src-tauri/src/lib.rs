@@ -539,7 +539,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = show_debug(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    // 系统会自己上色的单色图标（macOS 菜单栏），没有就用应用图标
+    if let Some(icon) = platform::tray_template_icon() {
+        builder = builder.icon(icon).icon_as_template(true);
+    } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder.build(app)?;

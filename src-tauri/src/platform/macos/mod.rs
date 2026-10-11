@@ -9,6 +9,7 @@ use objc2::runtime::NSObjectProtocol;
 use objc2::sel;
 use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 use objc2_core_foundation::{CFArray, CFLocale, CFRetained, CFString};
+use tauri::image::Image;
 use tauri::{ActivationPolicy, Manager, WebviewWindow};
 
 use crate::lang::Lang;
@@ -66,6 +67,38 @@ pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+/// 菜单栏图标：Clawd 的剪影（眼睛挖空），系统按浅色/深色菜单栏自己上色（template image）。
+/// 菜单栏图标固定 18pt 高：每格 3 像素、上下各留 3 像素，16×10 格正好 48×36，Retina 上一格对齐整像素。
+/// 直接从皮肤文件画，和应用图标（scripts/make-icon.mjs）同一个来源。
+pub fn tray_template_icon() -> Option<Image<'static>> {
+    #[derive(serde::Deserialize)]
+    struct Skin {
+        grid: [u32; 2],
+        parts: Vec<Part>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Part {
+        color: String,
+        rect: [u32; 4],
+    }
+    const CELL: u32 = 3;
+    const PAD: u32 = 3;
+    let skin: Skin = serde_json::from_str(include_str!("../../../../skins/clawd/skin.json")).ok()?;
+    let (w, h) = (skin.grid[0] * CELL, skin.grid[1] * CELL + 2 * PAD);
+    // 全黑，只用 alpha：身体不透明，眼睛（画在身体后面）挖空
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    for part in &skin.parts {
+        let alpha = if part.color == "eye" { 0 } else { 255 };
+        let [x, y, pw, ph] = part.rect;
+        for py in y * CELL + PAD..(y + ph) * CELL + PAD {
+            for px in x * CELL..(x + pw) * CELL {
+                rgba[((py * w + px) * 4 + 3) as usize] = alpha;
+            }
+        }
+    }
+    Some(Image::new_owned(rgba, w, h))
 }
 
 /// 系统设置里"首选语言"的第一个。网页里的 navigator.language 也是从这儿来的，两边一致。
@@ -126,6 +159,16 @@ mod tests {
         assert_eq!(from_tag("en-US"), Lang::En);
         assert_eq!(from_tag("ko-KR"), Lang::En); // 韩文归到英文
         assert_eq!(from_tag(""), Lang::En);
+    }
+
+    #[test]
+    fn tray_icon_is_a_pixel_aligned_silhouette() {
+        let icon = tray_template_icon().expect("skin.json parses");
+        assert_eq!((icon.width(), icon.height()), (48, 36));
+        let alpha = |cx: u32, cy: u32| icon.rgba()[(((cy * 3 + 3 + 1) * 48 + cx * 3 + 1) * 4 + 3) as usize];
+        assert_eq!(alpha(5, 5), 255, "身体");
+        assert_eq!(alpha(4, 2), 0, "眼睛挖空");
+        assert_eq!(alpha(0, 0), 0, "身体外面");
     }
 
     #[test]

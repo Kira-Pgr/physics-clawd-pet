@@ -20,6 +20,7 @@ pub use imp::{
     ancestor_pids,
     prepare_overlay,
     single_instance,
+    tray_template_icon,
     ui_language,
     window_id,
     // 桌面状态（光标、窗口、工作区、全屏）
