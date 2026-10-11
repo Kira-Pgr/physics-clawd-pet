@@ -25,6 +25,7 @@ use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::lang::tr;
+use crate::platform;
 
 /// 固定端口：hook 命令行里写的就是它
 pub const PORT: u16 = 47326;
@@ -85,7 +86,7 @@ pub fn hook_main(args: &[String]) -> i32 {
         crate::codex::summarize(&v, args.iter().any(|a| a == crate::codex::OBSERVE_PERMISSION))
     } else { summarize(&v) };
     msg.insert("token".into(), Value::String(token));
-    msg.insert("ancestors".into(), json!(ancestor_pids()));
+    msg.insert("ancestors".into(), json!(platform::ancestor_pids()));
     let is_permission = msg.get("event").and_then(Value::as_str) == Some("PermissionRequest");
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -173,46 +174,6 @@ fn tool_summary(name: &str, input: Option<&Value>) -> String {
         input.as_object()?.values().find_map(|x| x.as_str().filter(|t| !t.is_empty()).map(str::to_string))
     });
     truncate(text.unwrap_or_default().trim(), 400)
-}
-
-/// 本进程往上的祖先进程（父、祖父……），用来找是哪个窗口在跑 Claude Code
-#[cfg(windows)]
-fn ancestor_pids() -> Vec<u32> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    };
-    let mut parent: HashMap<u32, u32> = HashMap::new();
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return vec![] };
-        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
-        if Process32FirstW(snap, &mut e).is_ok() {
-            loop {
-                parent.insert(e.th32ProcessID, e.th32ParentProcessID);
-                if Process32NextW(snap, &mut e).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = CloseHandle(snap);
-    }
-    let mut out = Vec::new();
-    let mut pid = std::process::id();
-    for _ in 0..16 {
-        match parent.get(&pid) {
-            Some(&pp) if pp != 0 && pp != pid && !out.contains(&pp) => {
-                out.push(pp);
-                pid = pp;
-            }
-            _ => break,
-        }
-    }
-    out
-}
-
-#[cfg(not(windows))]
-fn ancestor_pids() -> Vec<u32> {
-    vec![]
 }
 
 // =====================================================================
@@ -311,7 +272,7 @@ impl Bridge {
         let event = msg.get("event").and_then(Value::as_str).unwrap_or("").to_string();
         // 要宠物跑过去敲的窗口：跑着这个 Claude Code 的终端 / 编辑器 / 桌面 App
         if matches!(event.as_str(), "PermissionRequest" | "Notification" | "Stop") {
-            if let Some(w) = window_for(&ancestors) {
+            if let Some(w) = platform::window_for_pids(&ancestors) {
                 msg.insert("window".into(), json!(w));
             }
         }
@@ -362,16 +323,6 @@ impl Bridge {
 /// 比较令牌（长度相同时逐字节比完，不提前返回）
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
-#[cfg(windows)]
-fn window_for(ancestors: &[u32]) -> Option<i64> {
-    crate::desktop::window_for_pids(ancestors).map(|h| h as i64)
-}
-
-#[cfg(not(windows))]
-fn window_for(_ancestors: &[u32]) -> Option<i64> {
-    None
 }
 
 /// 随机令牌：系统随机种子的哈希，128 位

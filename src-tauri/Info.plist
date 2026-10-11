@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 菜单栏小工具：从启动那一刻起就不在程序坞里出现（运行时也会设成 Accessory，这里免得启动时闪一下） -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

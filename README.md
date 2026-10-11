@@ -9,7 +9,7 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 把它拎起来甩出去：翻滚落地、超级英雄式砸地，或者像蜘蛛侠一样贴在屏幕边上。
 
 [![Release](https://img.shields.io/github/v/release/Ramirez0291/physics-clawd-pet?include_prereleases&label=release)](https://github.com/Ramirez0291/physics-clawd-pet/releases)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011%20%7C%20macOS-0078D6)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -43,9 +43,9 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 - **Stands on your windows.** It lands on window title bars, hops onto nearby windows, and jumps off the edge.
 - **Rides along when you move a window.** Drag the window gently and it rides along. Stop suddenly and inertia flings it off. Yank the window away and it falls.
 - **Falls when its window closes,** gets minimized, or is covered by another window.
-- **Has a life of its own.** It walks along the taskbar, climbs walls, hangs from the ceiling, and follows your cursor with its eyes. Sometimes it plays on a laptop, trades stocks or eats coins.
+- **Has a life of its own.** It walks along the taskbar (the Dock on macOS), climbs walls, hangs from the ceiling, and follows your cursor with its eyes. Sometimes it plays on a laptop, trades stocks or eats coins.
 - **Pet it** by moving your cursor back and forth over its head.
-- **Stays out of your way.** It walks away from the text box you're typing in, and hides while a full-screen app (game, video, slides) is running.
+- **Stays out of your way.** It walks away from the text box you're typing in, and hides while a full-screen app (game, video, slides) is running. On macOS, dodging text boxes needs the Accessibility permission: turn it on from the tray menu.
 - **Never steals focus or clicks.** Only the pet itself is clickable. Everything else clicks straight through to the windows below.
 
 **It keeps you on schedule**
@@ -67,10 +67,10 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 
 ### Download
 
-Grab the installer from [**Releases**](https://github.com/Ramirez0291/physics-clawd-pet/releases).
+Grab it from [**Releases**](https://github.com/Ramirez0291/physics-clawd-pet/releases).
 
-
-Requires Windows 10 or 11 with WebView2 (already included in Windows 11).
+- **Windows:** run the installer. Requires Windows 10 or 11 with WebView2 (already included in Windows 11).
+- **macOS:** open the `.dmg` and drag Clawd Pet into Applications. The app isn't notarized by Apple yet, so the first time macOS will refuse to open it: go to System Settings → Privacy & Security and click **Open Anyway**.
 
 ### How to use
 
@@ -85,28 +85,30 @@ Requires Windows 10 or 11 with WebView2 (already included in Windows 11).
 | Hide / show | Tray icon → right-click → **Hide Clawd** |
 | Tuning panel | Left-click the tray icon |
 
-**Claude Code integration** adds a few entries to the `hooks` section of `~/.claude/settings.json`, all pointing at Clawd. Turning it off removes them, and your own hooks are left alone. The first time Clawd changes that file it saves a backup as `settings.json.clawd-backup`. The uninstaller removes the hooks too. If Clawd is moved to a different folder, open the Assistant window and press **Reconnect**.
+On macOS the tray icon is Clawd's silhouette in the menu bar.
 
-The tray menu, the Assistant window, and what Clawd says follow your Windows display language: Chinese, Japanese (where Clawd speaks Osaka dialect — it's an Osaka crab now), or English everywhere else. The tuning panel itself is in Chinese for now.
+**Claude Code integration** adds a few entries to the `hooks` section of `~/.claude/settings.json`, all pointing at Clawd. Turning it off removes them, and your own hooks are left alone. The first time Clawd changes that file it saves a backup as `settings.json.clawd-backup`. The Windows uninstaller removes the hooks too. If Clawd is moved to a different folder, open the Assistant window and press **Reconnect**.
+
+The tray menu, the Assistant window, and what Clawd says follow your system language: Chinese, Japanese (where Clawd speaks Osaka dialect — it's an Osaka crab now), or English everywhere else. The tuning panel itself is in Chinese for now.
 
 **Codex integration** is also available: open **Assistant → Claude Code / Codex**, select **Codex**, and enable it. Requires a local Codex CLI or desktop runtime with [lifecycle hooks](https://learn.chatgpt.com/docs/hooks). It reacts to prompts, tools, compaction, subagents, completion, and interruptions. Failed tools trigger the error reaction when their result includes an error flag or a nonzero shell exit status. The pet can also handle permission requests; uncheck bubble approval to receive reminders and answer in Codex instead. Reaction settings are shared with Claude Code, and both integrations can run together.
 
-Codex hooks are added to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). Existing hooks are preserved; the first edit backs up the file to `hooks.json.clawd-backup`. After enabling, reconnecting, or changing bubble approval, review and trust the updated hooks in Codex (`/hooks` in the CLI), then restart the session if needed. Turning off the integration or uninstalling the pet removes only its own hooks. Cloud sessions and remote/WSL runtimes cannot connect to this Windows localhost bridge directly.
+Codex hooks are added to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). Existing hooks are preserved; the first edit backs up the file to `hooks.json.clawd-backup`. After enabling, reconnecting, or changing bubble approval, review and trust the updated hooks in Codex (`/hooks` in the CLI), then restart the session if needed. Turning off the integration or uninstalling the pet on Windows removes only its own hooks. Cloud sessions and remote/WSL runtimes cannot connect to this localhost bridge directly.
 
 ### Tuning panel
 
 Everything about how Clawd feels is adjustable live: gravity, bounciness, landing thresholds, walking speed, size and 60+ other parameters. The panel also has slow motion, pause and single-step, repeatable test throws, and a "replay last throw" button.
 
-Click **Save** to keep your settings. They're stored in `%APPDATA%\com.physicsclawdpet.desktop\tuning.json` and loaded on every launch.
+Click **Save** to keep your settings. They're stored in `tuning.json` under `%APPDATA%\com.physicsclawdpet.desktop\` (Windows) or `~/Library/Application Support/com.physicsclawdpet.desktop/` (macOS) and loaded on every launch.
 
 ### Build from source
 
-Requirements: Node.js 20+, Rust (MSVC toolchain), Visual Studio C++ Build Tools and WebView2.
+Requirements: Node.js 20+ and Rust, plus Visual Studio C++ Build Tools and WebView2 on Windows, or the Xcode Command Line Tools on macOS.
 
 ```bash
 npm install
 npm run tauri dev     # run with the tuning panel open
-npm run tauri build   # build the installer → src-tauri/target/release/bundle/nsis/
+npm run tauri build   # build the installer → src-tauri/target/release/bundle/ (nsis/ on Windows, dmg/ and macos/ on macOS)
 ```
 
 Just want to play with the physics? You can skip Rust and preview it in the browser:
@@ -129,7 +131,8 @@ src/
   platform/   Tauri and browser implementations
   skin/       Skin format and loader
 skins/        Built-in characters: clawd/, dots/, dots-green/, dots-yellow/, dots-pink/
-src-tauri/    Rust: transparent overlay window, tray, desktop window tracking (Win32)
+src-tauri/    Rust: transparent overlay window, tray, desktop window tracking
+  src/platform/   Everything OS-specific: windows/ (Win32) and macos/ (AppKit, CoreGraphics)
 tests/        Engine tests
 ```
 
@@ -180,9 +183,9 @@ The Dots skins are likewise **fan art** of OpenAI's Dots, not affiliated with or
 - **站在窗口上：** 会落在窗口顶上，自己跳上附近的窗口，走到边缘再跳下去。
 - **跟着窗口走：** 平稳拖动它脚下的窗口会带着它走，急停会把它甩飞，猛地一拽会把窗口从它脚下"抽走"。
 - **窗口没了会掉下去：** 脚下的窗口被关掉、最小化或者被挡住时，它会掉下去。
-- **自己会玩：** 在任务栏上走来走去、爬墙、倒挂天花板，眼睛跟着鼠标转；有时还会玩电脑、炒股、吃TOKEN。
+- **自己会玩：** 在任务栏（macOS 上是程序坞）上走来走去、爬墙、倒挂天花板，眼睛跟着鼠标转；有时还会玩电脑、炒股、吃TOKEN。
 - **可以摸摸它：** 在它头上来回晃鼠标。
-- **不碍事：** 你在哪个输入框打字，它就从那里让开；全屏玩游戏、看视频、放幻灯片时自动隐藏。
+- **不碍事：** 你在哪个输入框打字，它就从那里让开；全屏玩游戏、看视频、放幻灯片时自动隐藏。macOS 上躲输入框需要"辅助功能"权限，在托盘菜单里打开。
 - **不抢焦点、不挡点击：** 只有宠物本身能点到，其他地方的点击都会穿透到下面的窗口。
 
 **帮你守时间**
@@ -204,10 +207,10 @@ The Dots skins are likewise **fan art** of OpenAI's Dots, not affiliated with or
 
 ### 下载
 
-到 [**Releases**](https://github.com/Ramirez0291/physics-clawd-pet/releases) 下载安装包。
+到 [**Releases**](https://github.com/Ramirez0291/physics-clawd-pet/releases) 下载。
 
-
-系统要求：Windows 10 / 11，需要 WebView2（Windows 11 自带）。
+- **Windows：** 运行安装程序。系统要求 Windows 10 / 11，需要 WebView2（Windows 11 自带）。
+- **macOS：** 打开 `.dmg`，把 Clawd Pet 拖进"应用程序"。目前还没有经过 Apple 公证，第一次打开会被系统拦下：到"系统设置 → 隐私与安全性"里点 **仍要打开**。
 
 ### 怎么玩
 
@@ -222,28 +225,30 @@ The Dots skins are likewise **fan art** of OpenAI's Dots, not affiliated with or
 | 隐藏 / 显示 | 托盘图标右键 → **隐藏 Clawd** |
 | 调教面板 | 左键点托盘图标 |
 
-**和 Claude Code 联动**时，会在 `~/.claude/settings.json` 的 `hooks` 里加几条，都指向 Clawd。关闭联动会把它们删掉，不动你自己的 hooks。第一次改之前会备份成 `settings.json.clawd-backup`。卸载程序时也会一并删除。如果把 Clawd 挪到了别的目录，打开小助手窗口点 **重新开启** 即可。
+macOS 上托盘图标就是菜单栏里 Clawd 的剪影。
 
-托盘菜单、小助手窗口和 Clawd 说的话都跟随 Windows 显示语言：中文系统显示中文，日文系统显示日文（日文版的 Clawd 是只大阪的螃蟹，说关西腔），其他语言显示英文。调教面板目前只有中文。
+**和 Claude Code 联动**时，会在 `~/.claude/settings.json` 的 `hooks` 里加几条，都指向 Clawd。关闭联动会把它们删掉，不动你自己的 hooks。第一次改之前会备份成 `settings.json.clawd-backup`。在 Windows 上卸载程序时也会一并删除。如果把 Clawd 挪到了别的目录，打开小助手窗口点 **重新开启** 即可。
+
+托盘菜单、小助手窗口和 Clawd 说的话都跟随系统语言：中文系统显示中文，日文系统显示日文（日文版的 Clawd 是只大阪的螃蟹，说关西腔），其他语言显示英文。调教面板目前只有中文。
 
 **和 Codex 联动：** 打开 **小助手 → Claude Code / Codex**，选择 **Codex**，然后开启。需要支持[生命周期 hooks](https://learn.chatgpt.com/docs/hooks) 的本机 Codex CLI 或桌面运行环境。支持思考、工具执行、上下文压缩、子代理、完成和中断；工具结果包含错误标记或非零 shell 退出码时触发被电反应。也可以从气泡处理权限请求；取消勾选气泡批准后，只提醒，仍在 Codex 里选择。反应设置与 Claude Code 共用，两种联动可以同时开启。
 
-Codex 联动写入 `$CODEX_HOME/hooks.json`（默认 `~/.codex/hooks.json`），保留你已有的 hooks，第一次修改前备份为 `hooks.json.clawd-backup`。开启、重新连接或切换气泡批准后，需要在 Codex 里审阅并信任更新后的 hooks（CLI 中使用 `/hooks`），必要时重启会话。关闭联动或卸载桌宠时，只删除桌宠自己的条目。云端会话以及远程 / WSL 运行环境无法直接连接 Windows 的本机桥接服务。
+Codex 联动写入 `$CODEX_HOME/hooks.json`（默认 `~/.codex/hooks.json`），保留你已有的 hooks，第一次修改前备份为 `hooks.json.clawd-backup`。开启、重新连接或切换气泡批准后，需要在 Codex 里审阅并信任更新后的 hooks（CLI 中使用 `/hooks`），必要时重启会话。关闭联动或在 Windows 上卸载桌宠时，只删除桌宠自己的条目。云端会话以及远程 / WSL 运行环境无法直接连接这个本机桥接服务。
 
 ### 调教面板
 
 Clawd 的手感全都可以实时调：重力、弹性、落地分级的阈值、走路速度、大小等 60 多个参数。面板里还有慢动作、暂停和单步、可重复的测试投掷，以及"重放上次投掷"。
 
-点 **保存** 就会记住你的设置。设置存在 `%APPDATA%\com.physicsclawdpet.desktop\tuning.json`，每次启动自动加载。
+点 **保存** 就会记住你的设置。设置存在 `tuning.json` 里，Windows 上在 `%APPDATA%\com.physicsclawdpet.desktop\`，macOS 上在 `~/Library/Application Support/com.physicsclawdpet.desktop/`，每次启动自动加载。
 
 ### 从源码构建
 
-需要：Node.js 20+、Rust（MSVC 工具链）、Visual Studio C++ 生成工具、WebView2。
+需要：Node.js 20+ 和 Rust；Windows 上还要 Visual Studio C++ 生成工具和 WebView2，macOS 上还要 Xcode 命令行工具。
 
 ```bash
 npm install
 npm run tauri dev     # 开发模式，会同时打开调教面板
-npm run tauri build   # 打包安装程序 → src-tauri/target/release/bundle/nsis/
+npm run tauri build   # 打包 → src-tauri/target/release/bundle/（Windows 在 nsis/，macOS 在 dmg/ 和 macos/）
 ```
 
 只想玩物理、不想装 Rust 的话，可以直接在浏览器里预览：

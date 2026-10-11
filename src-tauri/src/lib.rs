@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
@@ -10,49 +10,14 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder,
 };
 
-#[cfg(windows)]
 mod assist;
 mod claude;
 mod codex;
-mod lang;
-#[cfg(windows)]
 mod desktop;
-#[cfg(windows)]
 mod input;
-#[cfg(windows)]
+mod lang;
+mod platform;
 mod watcher;
-
-#[cfg(not(windows))]
-mod watcher {
-    use std::sync::{Arc, Mutex};
-    pub const OVERLAY: &str = "overlay";
-    #[derive(Default)]
-    pub struct DeskState {
-        pub hits: Vec<[f64; 4]>,
-        pub dragging: bool,
-        pub carrier: Option<isize>,
-        pub manual_hidden: bool,
-        pub resync: bool,
-        pub input_resync: bool,
-    }
-    pub type Shared = Arc<Mutex<DeskState>>;
-}
-
-#[cfg(not(windows))]
-mod assist {
-    pub fn idle_ms() -> u64 {
-        0
-    }
-    pub fn http_get(_url: &str) -> Result<String, String> {
-        Err("unsupported platform".into())
-    }
-    pub fn decode_text(bytes: Vec<u8>) -> String {
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-    pub fn pick_ics(_owner: Option<isize>, _title: String, _filter: String) -> Option<String> {
-        None
-    }
-}
 
 use watcher::{DeskState, Shared, OVERLAY};
 
@@ -73,21 +38,6 @@ pub fn cli(args: &[String]) -> Option<i32> {
     None
 }
 
-/// 只允许一只宠物：第二个实例直接退出（返回 false）
-#[cfg(windows)]
-fn single_instance() -> bool {
-    use windows::core::w;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-    // 句柄故意不关：进程活着它就一直占着
-    let created = unsafe { CreateMutexW(None, false, w!(r"Local\PhysicsClawdPet.SingleInstance")) };
-    created.is_ok() && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
-}
-
-#[cfg(not(windows))]
-fn single_instance() -> bool {
-    true
-}
 const ASSISTANT: &str = "assistant";
 
 /// 覆盖层：铺满主屏的工作区（不含任务栏）。
@@ -115,25 +65,25 @@ fn create_overlay(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .focusable(false)
         .visible(false)
         .background_throttling(BackgroundThrottlingPolicy::Disabled)
+        // macOS：程序不在前台时，第一下点击也直接交给宠物（不然第一下只是把程序切到前台）
+        .accept_first_mouse(true)
         .build()?;
     win.set_position(PhysicalPosition::new(area.position.x, area.position.y))?;
     win.set_size(PhysicalSize::new(area.size.width, area.size.height))?;
     win.set_ignore_cursor_events(true)?;
+    platform::prepare_overlay(&win)?;
     win.show()?;
 
-    #[cfg(windows)]
-    {
-        let rect = desktop::Rect {
-            left: area.position.x,
-            top: area.position.y,
-            right: area.position.x + area.size.width as i32,
-            bottom: area.position.y + area.size.height as i32,
-        };
-        let hwnd = win.hwnd()?.0 as isize;
-        let shared = app.state::<Shared>().inner().clone();
-        watcher::spawn(app.clone(), shared.clone(), hwnd, rect);
-        input::spawn(app.clone(), shared, hwnd);
-    }
+    let rect = desktop::Rect {
+        left: area.position.x,
+        top: area.position.y,
+        right: area.position.x + area.size.width as i32,
+        bottom: area.position.y + area.size.height as i32,
+    };
+    let id = platform::window_id(&win)?;
+    let shared = app.state::<Shared>().inner().clone();
+    watcher::spawn(app.clone(), shared.clone(), id, rect);
+    input::spawn(app.clone(), shared, id);
     Ok(win)
 }
 
@@ -155,6 +105,8 @@ struct Texts {
     smaller: &'static str,
     /// 与 SIZE_PRESETS 一一对应
     presets: [&'static str; 4],
+    /// 只在要用户授权的平台（macOS）出现
+    avoid_input: &'static str,
     quit: &'static str,
 }
 
@@ -173,6 +125,7 @@ const ZH: Texts = Texts {
     bigger: "放大",
     smaller: "缩小",
     presets: ["小", "中（默认）", "大", "特大"],
+    avoid_input: "避开正在输入的文本框…",
     quit: "退出",
 };
 
@@ -191,6 +144,7 @@ const EN: Texts = Texts {
     bigger: "Bigger",
     smaller: "Smaller",
     presets: ["Small", "Medium (default)", "Large", "Extra large"],
+    avoid_input: "Avoid the text box I'm typing in…",
     quit: "Quit",
 };
 
@@ -210,6 +164,7 @@ const JA: Texts = Texts {
     bigger: "大きく",
     smaller: "小さく",
     presets: ["小", "中（標準）", "大", "特大"],
+    avoid_input: "入力中のテキスト欄を避ける…",
     quit: "終了",
 };
 
@@ -385,13 +340,13 @@ async fn open_assistant(app: AppHandle) -> Result<(), String> {
 /// 距离上一次键盘/鼠标操作多少毫秒
 #[tauri::command]
 fn desk_idle_ms() -> u64 {
-    assist::idle_ms()
+    platform::idle_ms()
 }
 
 /// 下载日历订阅（网页里直接 fetch 会被跨域拦住）
 #[tauri::command]
 async fn fetch_text(url: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || assist::http_get(&url))
+    tauri::async_runtime::spawn_blocking(move || platform::http_get(&url).map(assist::decode_text))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -406,11 +361,10 @@ fn read_text_file(path: String) -> Result<String, String> {
 async fn pick_ics_file(app: AppHandle) -> Option<String> {
     let owner = app
         .get_webview_window(ASSISTANT)
-        .and_then(|w| w.hwnd().ok())
-        .map(|h| h.0 as isize);
+        .and_then(|w| platform::window_id(&w).ok());
     let t = texts();
     let (title, filter) = (t.pick_ics.to_string(), t.ics_filter.to_string());
-    tauri::async_runtime::spawn_blocking(move || assist::pick_ics(owner, title, filter))
+    tauri::async_runtime::spawn_blocking(move || platform::pick_ics(owner, title, filter))
         .await
         .ok()
         .flatten()
@@ -454,6 +408,8 @@ struct TrayItems {
     reset: MenuItem<tauri::Wry>,
     hide: MenuItem<tauri::Wry>,
     skins: Submenu<tauri::Wry>,
+    /// "躲开输入框"：打勾 = 有系统权限。不需要授权的平台没有这一项
+    input: Option<CheckMenuItem<tauri::Wry>>,
     /// 当前形象的名字
     name: Mutex<String>,
 }
@@ -504,6 +460,16 @@ fn tray_set_skins(
     items.sync_labels(&app, hidden).map_err(err)
 }
 
+/// 托盘里"躲开输入框"的勾跟着系统权限走（输入框检测线程发现权限变了也会调）
+pub(crate) fn sync_input_permission(app: &AppHandle) {
+    let (Some(items), Some(granted)) = (app.try_state::<TrayItems>(), platform::input_permission()) else {
+        return;
+    };
+    if let Some(item) = &items.input {
+        let _ = item.set_checked(granted);
+    }
+}
+
 /// 托盘"大小"菜单的预设（px/格），id 是 "size:<值>"；名字在 Texts::presets 里
 const SIZE_PRESETS: [f64; 4] = [4.0, 6.0, 9.0, 12.0];
 
@@ -523,13 +489,22 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     for (label, scale) in t.presets.iter().zip(SIZE_PRESETS) {
         size.append(&MenuItem::with_id(app, format!("size:{scale}"), *label, true, None::<&str>)?)?;
     }
+    let input = platform::input_permission()
+        .map(|granted| CheckMenuItem::with_id(app, "input", t.avoid_input, true, granted, None::<&str>))
+        .transpose()?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", t.quit, true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&assistant, &debug, &reset, &hide, &skins, &size, &sep, &quit])?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&assistant, &debug, &reset, &hide, &skins, &size];
+    if let Some(input) = &input {
+        items.push(input);
+    }
+    items.extend([&sep as &dyn IsMenuItem<tauri::Wry>, &quit]);
+    let menu = Menu::with_items(app, &items)?;
     app.manage(TrayItems {
         reset,
         hide,
         skins,
+        input,
         name: Mutex::new(name.into()),
     });
 
@@ -555,6 +530,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     s.manual_hidden
                 };
                 let _ = app.state::<TrayItems>().sync_labels(app, hidden);
+            }
+            "input" => {
+                platform::request_input_permission();
+                // 点一下勾会自己翻转：先改回真实状态，用户在系统设置里打开后输入框检测线程会更新
+                sync_input_permission(app);
             }
             "quit" => app.exit(0),
             // 覆盖层负责夹到范围内并保存
@@ -583,7 +563,10 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = show_debug(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
+    // 系统会自己上色的单色图标（macOS 菜单栏），没有就用应用图标
+    if let Some(icon) = platform::tray_template_icon() {
+        builder = builder.icon(icon).icon_as_template(true);
+    } else if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder.build(app)?;
@@ -592,7 +575,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if !single_instance() {
+    if !platform::single_instance() {
         return;
     }
     tauri::Builder::default()
