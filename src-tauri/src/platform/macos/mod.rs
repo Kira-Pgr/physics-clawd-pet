@@ -4,6 +4,9 @@ mod assist;
 mod desktop;
 mod input;
 
+use objc2::msg_send;
+use objc2::runtime::NSObjectProtocol;
+use objc2::sel;
 use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 use tauri::{ActivationPolicy, Manager, WebviewWindow};
 
@@ -32,6 +35,7 @@ pub fn window_id(win: &WebviewWindow) -> tauri::Result<isize> {
 /// - 程序坞里不显示图标、也没有菜单栏（宠物只有托盘图标），相当于 Windows 上不进任务栏
 /// - 每个桌面（Space）都有它、切桌面时不跟着滑走、Cmd+` 切窗口时跳过它
 /// - 故意不加 FullScreenAuxiliary：别的程序全屏时（在它自己的 Space 里）覆盖层不出现
+/// - 点宠物不会把程序切到前台、不抢焦点（相当于 Windows 的 WS_EX_NOACTIVATE）
 pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
     win.app_handle().set_activation_policy(ActivationPolicy::Accessory)?;
     let ns_window = win.ns_window()? as usize;
@@ -43,6 +47,11 @@ pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
                 | NSWindowCollectionBehavior::Stationary
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
+        // 不激活的 NSPanel 内部用的就是这个开关（窗口服务器那边的标记：点它不激活程序）。
+        // 私有方法，以后的系统没有了就退回原样：功能都正常，只是点一下会抢焦点。
+        if w.respondsToSelector(sel!(_setPreventsActivation:)) {
+            let _: () = unsafe { msg_send![w, _setPreventsActivation: true] };
+        }
     });
     Ok(())
 }
