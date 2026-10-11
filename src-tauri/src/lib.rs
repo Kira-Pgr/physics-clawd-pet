@@ -61,10 +61,13 @@ fn create_overlay(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .focusable(false)
         .visible(false)
         .background_throttling(BackgroundThrottlingPolicy::Disabled)
+        // macOS：程序不在前台时，第一下点击也直接交给宠物（不然第一下只是把程序切到前台）
+        .accept_first_mouse(true)
         .build()?;
     win.set_position(PhysicalPosition::new(area.position.x, area.position.y))?;
     win.set_size(PhysicalSize::new(area.size.width, area.size.height))?;
     win.set_ignore_cursor_events(true)?;
+    platform::prepare_overlay(&win)?;
     win.show()?;
 
     let rect = desktop::Rect {

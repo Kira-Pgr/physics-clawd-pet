@@ -32,6 +32,11 @@ pub fn window_id(win: &WebviewWindow) -> tauri::Result<isize> {
     Ok(win.hwnd()?.0 as isize)
 }
 
+/// 覆盖层要的都在建窗口时设好了（不进任务栏、不抢焦点）
+pub fn prepare_overlay(_win: &WebviewWindow) -> tauri::Result<()> {
+    Ok(())
+}
+
 pub fn ui_language() -> Lang {
     from_langid(unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() })
 }

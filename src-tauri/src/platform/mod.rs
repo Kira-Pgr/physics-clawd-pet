@@ -16,8 +16,9 @@ mod imp;
 compile_error!("只支持 Windows 和 macOS");
 
 pub use imp::{
-    // 进程、界面语言、窗口 id
+    // 进程、界面语言、窗口
     ancestor_pids,
+    prepare_overlay,
     single_instance,
     ui_language,
     window_id,

@@ -4,7 +4,8 @@ mod assist;
 mod desktop;
 mod input;
 
-use tauri::WebviewWindow;
+use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+use tauri::{ActivationPolicy, Manager, WebviewWindow};
 
 use crate::lang::Lang;
 
@@ -20,9 +21,30 @@ pub fn single_instance() -> bool {
     true
 }
 
-// TODO(macOS)：应该是覆盖层 NSWindow 的 windowNumber（= CGWindowID）
-pub fn window_id(_win: &WebviewWindow) -> tauri::Result<isize> {
-    Ok(0)
+/// 我们自己窗口的 CGWindowID（= NSWindow.windowNumber）
+pub fn window_id(win: &WebviewWindow) -> tauri::Result<isize> {
+    // 指针不能跨线程传，先转成整数；NSWindow 只能在主线程碰
+    let ns_window = win.ns_window()? as usize;
+    Ok(dispatch2::run_on_main(move |_| unsafe { &*(ns_window as *const NSWindow) }.windowNumber()))
+}
+
+/// 覆盖层显示之前调一次：
+/// - 程序坞里不显示图标、也没有菜单栏（宠物只有托盘图标），相当于 Windows 上不进任务栏
+/// - 每个桌面（Space）都有它、切桌面时不跟着滑走、Cmd+` 切窗口时跳过它
+/// - 故意不加 FullScreenAuxiliary：别的程序全屏时（在它自己的 Space 里）覆盖层不出现
+pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
+    win.app_handle().set_activation_policy(ActivationPolicy::Accessory)?;
+    let ns_window = win.ns_window()? as usize;
+    dispatch2::run_on_main(move |_| {
+        let w = unsafe { &*(ns_window as *const NSWindow) };
+        w.setCollectionBehavior(
+            w.collectionBehavior()
+                | NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+    });
+    Ok(())
 }
 
 // TODO(macOS)：从 Finder 启动的程序没有 LANG，要改问 NSLocale.preferredLanguages

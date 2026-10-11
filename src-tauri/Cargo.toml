@@ -37,6 +37,14 @@ windows = { version = "0.62", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# 和 Tauri 自己用的是同一套（Cargo.lock 里已经有了），不额外下载
+dispatch2 = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSScreen", "NSWindow"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGDirectDisplay", "CGEvent", "CGEventTypes", "CGGeometry", "CGWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray"] }
+
 [profile.release]
 codegen-units = 1
 lto = true
