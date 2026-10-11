@@ -8,32 +8,9 @@ pub enum Lang {
     En,
 }
 
-/// Windows 的 LANGID：低 10 位是主语言（0x04 = 中文，简体繁体都算；0x11 = 日文）
-pub fn from_langid(id: u16) -> Lang {
-    match id & 0x3ff {
-        0x04 => Lang::Zh,
-        0x11 => Lang::Ja,
-        _ => Lang::En,
-    }
-}
-
-#[cfg(windows)]
-fn detect() -> Lang {
-    from_langid(unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() })
-}
-
-#[cfg(not(windows))]
-fn detect() -> Lang {
-    match std::env::var("LANG") {
-        Ok(l) if l.starts_with("zh") => Lang::Zh,
-        Ok(l) if l.starts_with("ja") => Lang::Ja,
-        _ => Lang::En,
-    }
-}
-
 pub fn lang() -> Lang {
     static LANG: std::sync::OnceLock<Lang> = std::sync::OnceLock::new();
-    *LANG.get_or_init(detect)
+    *LANG.get_or_init(crate::platform::ui_language)
 }
 
 /// 按当前语言挑一句
@@ -51,20 +28,5 @@ pub fn colon() -> &'static str {
     match lang() {
         Lang::En => ": ",
         _ => "：",
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn langid_maps_primary_language() {
-        assert_eq!(from_langid(0x0411), Lang::Ja); // ja-JP
-        assert_eq!(from_langid(0x0804), Lang::Zh); // zh-CN
-        assert_eq!(from_langid(0x0404), Lang::Zh); // zh-TW
-        assert_eq!(from_langid(0x0c04), Lang::Zh); // zh-HK
-        assert_eq!(from_langid(0x0409), Lang::En); // en-US
-        assert_eq!(from_langid(0x0412), Lang::En); // ko-KR 归到英文
     }
 }

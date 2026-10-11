@@ -10,48 +10,13 @@ use tauri::{
     WebviewWindow, WebviewWindowBuilder,
 };
 
-#[cfg(windows)]
 mod assist;
 mod claude;
-mod lang;
-#[cfg(windows)]
 mod desktop;
-#[cfg(windows)]
 mod input;
-#[cfg(windows)]
+mod lang;
+mod platform;
 mod watcher;
-
-#[cfg(not(windows))]
-mod watcher {
-    use std::sync::{Arc, Mutex};
-    pub const OVERLAY: &str = "overlay";
-    #[derive(Default)]
-    pub struct DeskState {
-        pub hits: Vec<[f64; 4]>,
-        pub dragging: bool,
-        pub carrier: Option<isize>,
-        pub manual_hidden: bool,
-        pub resync: bool,
-        pub input_resync: bool,
-    }
-    pub type Shared = Arc<Mutex<DeskState>>;
-}
-
-#[cfg(not(windows))]
-mod assist {
-    pub fn idle_ms() -> u64 {
-        0
-    }
-    pub fn http_get(_url: &str) -> Result<String, String> {
-        Err("unsupported platform".into())
-    }
-    pub fn decode_text(bytes: Vec<u8>) -> String {
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-    pub fn pick_ics(_owner: Option<isize>, _title: String, _filter: String) -> Option<String> {
-        None
-    }
-}
 
 use watcher::{DeskState, Shared, OVERLAY};
 
@@ -69,21 +34,6 @@ pub fn cli(args: &[String]) -> Option<i32> {
     None
 }
 
-/// 只允许一只宠物：第二个实例直接退出（返回 false）
-#[cfg(windows)]
-fn single_instance() -> bool {
-    use windows::core::w;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
-    // 句柄故意不关：进程活着它就一直占着
-    let created = unsafe { CreateMutexW(None, false, w!(r"Local\PhysicsClawdPet.SingleInstance")) };
-    created.is_ok() && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
-}
-
-#[cfg(not(windows))]
-fn single_instance() -> bool {
-    true
-}
 const ASSISTANT: &str = "assistant";
 
 /// 覆盖层：铺满主屏的工作区（不含任务栏）。
@@ -117,19 +67,16 @@ fn create_overlay(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     win.set_ignore_cursor_events(true)?;
     win.show()?;
 
-    #[cfg(windows)]
-    {
-        let rect = desktop::Rect {
-            left: area.position.x,
-            top: area.position.y,
-            right: area.position.x + area.size.width as i32,
-            bottom: area.position.y + area.size.height as i32,
-        };
-        let hwnd = win.hwnd()?.0 as isize;
-        let shared = app.state::<Shared>().inner().clone();
-        watcher::spawn(app.clone(), shared.clone(), hwnd, rect);
-        input::spawn(app.clone(), shared, hwnd);
-    }
+    let rect = desktop::Rect {
+        left: area.position.x,
+        top: area.position.y,
+        right: area.position.x + area.size.width as i32,
+        bottom: area.position.y + area.size.height as i32,
+    };
+    let id = platform::window_id(&win)?;
+    let shared = app.state::<Shared>().inner().clone();
+    watcher::spawn(app.clone(), shared.clone(), id, rect);
+    input::spawn(app.clone(), shared, id);
     Ok(win)
 }
 
@@ -361,13 +308,13 @@ async fn open_assistant(app: AppHandle) -> Result<(), String> {
 /// 距离上一次键盘/鼠标操作多少毫秒
 #[tauri::command]
 fn desk_idle_ms() -> u64 {
-    assist::idle_ms()
+    platform::idle_ms()
 }
 
 /// 下载日历订阅（网页里直接 fetch 会被跨域拦住）
 #[tauri::command]
 async fn fetch_text(url: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || assist::http_get(&url))
+    tauri::async_runtime::spawn_blocking(move || platform::http_get(&url).map(assist::decode_text))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -382,11 +329,10 @@ fn read_text_file(path: String) -> Result<String, String> {
 async fn pick_ics_file(app: AppHandle) -> Option<String> {
     let owner = app
         .get_webview_window(ASSISTANT)
-        .and_then(|w| w.hwnd().ok())
-        .map(|h| h.0 as isize);
+        .and_then(|w| platform::window_id(&w).ok());
     let t = texts();
     let (title, filter) = (t.pick_ics.to_string(), t.ics_filter.to_string());
-    tauri::async_runtime::spawn_blocking(move || assist::pick_ics(owner, title, filter))
+    tauri::async_runtime::spawn_blocking(move || platform::pick_ics(owner, title, filter))
         .await
         .ok()
         .flatten()
@@ -568,7 +514,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if !single_instance() {
+    if !platform::single_instance() {
         return;
     }
     tauri::Builder::default()

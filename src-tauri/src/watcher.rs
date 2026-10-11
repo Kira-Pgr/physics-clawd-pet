@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 
 use crate::desktop::{self, Rect, Segment};
+use crate::platform;
 
 pub const OVERLAY: &str = "overlay";
 
@@ -76,17 +77,17 @@ impl Geometry {
     }
 }
 
-pub fn spawn(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
+pub fn spawn(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
     thread::Builder::new()
         .name("desk-watcher".into())
-        .spawn(move || run(app, shared, overlay_hwnd, area))
+        .spawn(move || run(app, shared, overlay_id, area))
         .expect("failed to spawn desk watcher");
 }
 
-fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
+fn run(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
     let start = Instant::now();
     let ms = || start.elapsed().as_secs_f64() * 1000.0;
-    let mut geo = Geometry { area, scale: desktop::window_scale(overlay_hwnd) };
+    let mut geo = Geometry { area, scale: platform::window_scale(overlay_id) };
 
     let mut ignoring = true;
     let mut hover = false;
@@ -124,8 +125,8 @@ fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
         // 工作区或缩放变了（换分辨率、挪任务栏）：覆盖层跟着调整
         if now - last_area_check >= Duration::from_secs(1) {
             last_area_check = now;
-            if let Some(a) = desktop::primary_work_area() {
-                let scale = desktop::window_scale(overlay_hwnd);
+            if let Some(a) = platform::primary_work_area() {
+                let scale = platform::window_scale(overlay_id);
                 if a != geo.area || (scale - geo.scale).abs() > 1e-6 {
                     geo = Geometry { area: a, scale };
                     let _ = win.set_position(PhysicalPosition::new(a.left, a.top));
@@ -138,7 +139,7 @@ fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
         // 全屏免打扰
         if last_fullscreen_check.map_or(true, |t| now - t >= Duration::from_millis(500)) {
             last_fullscreen_check = Some(now);
-            fullscreen = desktop::fullscreen_on_primary(overlay_hwnd);
+            fullscreen = platform::fullscreen_on_primary(overlay_id);
         }
         let want_hidden = fullscreen || manual_hidden;
         if want_hidden != hidden {
@@ -153,7 +154,7 @@ fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
         }
 
         // 光标：决定点击穿透，顺便给眼睛跟随用（限 15Hz，且只在宠物附近）
-        if let Some((cx, cy)) = desktop::cursor_pos() {
+        if let Some((cx, cy)) = platform::cursor_pos() {
             let (x, y) = (geo.x(cx), geo.y(cy));
             let over = hits.iter().any(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]);
             let want_ignore = !(over || dragging);
@@ -177,7 +178,7 @@ fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
 
         // 脚下的窗口：高频追踪，用来算窗口速度（甩飞）
         match carrier {
-            Some(id) => match desktop::frame_bounds(id) {
+            Some(id) => match platform::frame_bounds(id) {
                 Some(r) => {
                     if carrier_rect != Some((id, r)) {
                         carrier_rect = Some((id, r));
@@ -213,7 +214,7 @@ fn run(app: AppHandle, shared: Shared, overlay_hwnd: isize, area: Rect) {
         // 可站立的窗口顶边（10Hz）
         if force_platforms || last_enum.map_or(true, |t| now - t >= Duration::from_millis(100)) {
             last_enum = Some(now);
-            let wins = desktop::visible_windows(overlay_hwnd);
+            let wins = platform::visible_windows(overlay_id);
             let segs = desktop::platform_segments(&wins, geo.area, (40.0 * geo.scale) as i32);
             if force_platforms || segs != segments {
                 segments = segs;
