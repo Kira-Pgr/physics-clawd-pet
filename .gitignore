@@ -13,3 +13,5 @@ src-tauri/gen/schemas/
 app-icon.png
 *.log
 artifacts/preview-browser/
+# macOS Finder
+.DS_Store
