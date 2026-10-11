@@ -17,6 +17,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::desktop::Rect;
 
+/// UI Automation 不需要用户授权
+pub fn input_permission() -> Option<bool> {
+    None
+}
+
+pub fn request_input_permission() {}
+
 /// 在哪个线程用就在哪个线程建（里面初始化了 COM）
 pub struct InputProbe {
     uia: Option<IUIAutomation>,

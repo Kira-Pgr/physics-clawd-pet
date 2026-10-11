@@ -15,7 +15,7 @@ pub use desktop::{
     cursor_pos, frame_bounds, fullscreen_on_primary, primary_work_area, visible_windows, window_for_pids,
     window_scale,
 };
-pub use input::InputProbe;
+pub use input::{input_permission, request_input_permission, InputProbe};
 
 /// 只允许一只宠物：第二个实例直接退出（返回 false）
 pub fn single_instance() -> bool {

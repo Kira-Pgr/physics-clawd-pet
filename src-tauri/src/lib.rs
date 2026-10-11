@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
@@ -101,6 +101,8 @@ struct Texts {
     smaller: &'static str,
     /// 与 SIZE_PRESETS 一一对应
     presets: [&'static str; 4],
+    /// 只在要用户授权的平台（macOS）出现
+    avoid_input: &'static str,
     quit: &'static str,
 }
 
@@ -119,6 +121,7 @@ const ZH: Texts = Texts {
     bigger: "放大",
     smaller: "缩小",
     presets: ["小", "中（默认）", "大", "特大"],
+    avoid_input: "避开正在输入的文本框…",
     quit: "退出",
 };
 
@@ -137,6 +140,7 @@ const EN: Texts = Texts {
     bigger: "Bigger",
     smaller: "Smaller",
     presets: ["Small", "Medium (default)", "Large", "Extra large"],
+    avoid_input: "Avoid the text box I'm typing in…",
     quit: "Quit",
 };
 
@@ -156,6 +160,7 @@ const JA: Texts = Texts {
     bigger: "大きく",
     smaller: "小さく",
     presets: ["小", "中（標準）", "大", "特大"],
+    avoid_input: "入力中のテキスト欄を避ける…",
     quit: "終了",
 };
 
@@ -379,6 +384,8 @@ struct TrayItems {
     reset: MenuItem<tauri::Wry>,
     hide: MenuItem<tauri::Wry>,
     skins: Submenu<tauri::Wry>,
+    /// "躲开输入框"：打勾 = 有系统权限。不需要授权的平台没有这一项
+    input: Option<CheckMenuItem<tauri::Wry>>,
     /// 当前形象的名字
     name: Mutex<String>,
 }
@@ -429,6 +436,16 @@ fn tray_set_skins(
     items.sync_labels(&app, hidden).map_err(err)
 }
 
+/// 托盘里"躲开输入框"的勾跟着系统权限走（输入框检测线程发现权限变了也会调）
+pub(crate) fn sync_input_permission(app: &AppHandle) {
+    let (Some(items), Some(granted)) = (app.try_state::<TrayItems>(), platform::input_permission()) else {
+        return;
+    };
+    if let Some(item) = &items.input {
+        let _ = item.set_checked(granted);
+    }
+}
+
 /// 托盘"大小"菜单的预设（px/格），id 是 "size:<值>"；名字在 Texts::presets 里
 const SIZE_PRESETS: [f64; 4] = [4.0, 6.0, 9.0, 12.0];
 
@@ -448,13 +465,22 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     for (label, scale) in t.presets.iter().zip(SIZE_PRESETS) {
         size.append(&MenuItem::with_id(app, format!("size:{scale}"), *label, true, None::<&str>)?)?;
     }
+    let input = platform::input_permission()
+        .map(|granted| CheckMenuItem::with_id(app, "input", t.avoid_input, true, granted, None::<&str>))
+        .transpose()?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", t.quit, true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&assistant, &debug, &reset, &hide, &skins, &size, &sep, &quit])?;
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&assistant, &debug, &reset, &hide, &skins, &size];
+    if let Some(input) = &input {
+        items.push(input);
+    }
+    items.extend([&sep as &dyn IsMenuItem<tauri::Wry>, &quit]);
+    let menu = Menu::with_items(app, &items)?;
     app.manage(TrayItems {
         reset,
         hide,
         skins,
+        input,
         name: Mutex::new(name.into()),
     });
 
@@ -480,6 +506,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     s.manual_hidden
                 };
                 let _ = app.state::<TrayItems>().sync_labels(app, hidden);
+            }
+            "input" => {
+                platform::request_input_permission();
+                // 点一下勾会自己翻转：先改回真实状态，用户在系统设置里打开后输入框检测线程会更新
+                sync_input_permission(app);
             }
             "quit" => app.exit(0),
             // 覆盖层负责夹到范围内并保存

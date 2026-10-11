@@ -50,7 +50,7 @@ fn primary_screen() -> Option<(Rect, f64)> {
     ))
 }
 
-fn scale() -> f64 {
+pub(super) fn scale() -> f64 {
     match f64::from_bits(SCALE.load(Ordering::Relaxed)) {
         s if s > 0.0 => s,
         _ => primary_screen().map_or(1.0, |(_, s)| s),
@@ -58,7 +58,7 @@ fn scale() -> f64 {
 }
 
 /// 点 → 物理像素
-fn to_rect(b: CGRect, s: f64) -> Rect {
+pub(super) fn to_rect(b: CGRect, s: f64) -> Rect {
     Rect {
         left: (b.origin.x * s).round() as i32,
         top: (b.origin.y * s).round() as i32,

@@ -30,7 +30,9 @@ pub use imp::{
     visible_windows,
     window_for_pids,
     window_scale,
-    // 焦点输入框
+    // 焦点输入框；要不要用户授权（None = 不需要，托盘里就没有这一项）
+    input_permission,
+    request_input_permission,
     InputProbe,
     // 小助手：键鼠空闲、下载、选文件、系统代码页
     decode_system_codepage,

@@ -28,7 +28,14 @@ pub fn spawn(app: AppHandle, shared: Shared, overlay_id: isize) {
 fn run(app: AppHandle, shared: Shared, overlay_id: isize) {
     let probe = InputProbe::new();
     let mut last: Option<Option<ZoneMsg>> = None;
+    let mut last_permission = platform::input_permission();
     loop {
+        // 权限随时可能在系统设置里被打开或关掉：托盘里的勾跟着变
+        let permission = platform::input_permission();
+        if permission != last_permission {
+            last_permission = permission;
+            crate::sync_input_permission(&app);
+        }
         let (hidden, resync) = {
             let mut s = shared.lock().unwrap();
             (s.manual_hidden, std::mem::take(&mut s.input_resync))

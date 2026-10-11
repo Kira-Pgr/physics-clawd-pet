@@ -1,4 +1,4 @@
-//! macOS 实现。还在移植中：没做的先占位（功能关掉，但能编译、能跑），文件结构和 windows/ 一一对应。
+//! macOS 实现，文件结构和 windows/ 一一对应。
 
 mod assist;
 mod desktop;
@@ -18,7 +18,7 @@ pub use desktop::{
     cursor_pos, frame_bounds, fullscreen_on_primary, primary_work_area, visible_windows, window_for_pids,
     window_scale,
 };
-pub use input::InputProbe;
+pub use input::{input_permission, request_input_permission, InputProbe};
 
 /// 只允许一只宠物：第二个实例直接退出（返回 false）。
 /// 锁住临时目录（每个用户各一个）里的一个文件；文件故意不关，进程退出（包括崩溃）时系统自动解锁。
