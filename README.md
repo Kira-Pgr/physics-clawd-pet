@@ -15,7 +15,12 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 
 [English](#english) · [中文](#中文)
 
-<!-- TODO:  [demo](docs/demo.gif) -->
+
+![clawd-jump](skins\clawd\gif\clawd-jump.gif)
+![clawd-tumble](skins\clawd\gif\clawd-tumble.gif)
+![clawd-look](skins\clawd\gif\clawd-look.gif)
+
+
 
 </div>
 
@@ -51,7 +56,14 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 - **To-dos.** Give a to-do a due time and Clawd brings you a checklist sign when it's due. Mark it done right from the bubble.
 - Reminders appear as a speech bubble above its head. Clawd waits in place until you answer.
 
-**Two characters:** Clawd, and Dots, the blue fluffball in a beret. Switch between them any time from the tray menu. Each has its own habits: Dots doesn't trade stocks, but sometimes gives itself a good shake and sends tufts of fur flying.
+**It reacts to Claude Code** (optional, off by default)
+
+- **Turn it on** from the Assistant window and Clawd mirrors what Claude Code is doing: it shows a thinking bubble while Claude thinks, types on a keyboard while it works, sweeps while it compacts context, and cartwheels and throws confetti when a turn finishes.
+- **Errors zap it**, and each subagent Claude starts drops a mini Clawd from the sky that types until the subagent is done.
+- **Approve from the pet.** When Claude Code asks permission to run a command or edit a file, Clawd runs to that terminal's window and stomps; the bubble above it has Allow / Deny buttons. Answer in the terminal instead and the bubble goes away.
+- Each reaction can be turned off separately.
+
+**Five characters:** Clawd, plus four fluffy Dots: blue with a tilted beret, lime green with eyes on top and a bow tie, yellow with round glasses and a bow tie, and pink with headphones, closed eyes and a pom-pom. Switch from the tray's **Character** menu. Dots uses dense short fur, soft shading and smooth breathing; all four can type, eat tokens and shake tufts of fur loose.
 
 ### Download
 
@@ -73,7 +85,13 @@ Requires Windows 10 or 11 with WebView2 (already included in Windows 11).
 | Hide / show | Tray icon → right-click → **Hide Clawd** |
 | Tuning panel | Left-click the tray icon |
 
+**Claude Code integration** adds a few entries to the `hooks` section of `~/.claude/settings.json`, all pointing at Clawd. Turning it off removes them, and your own hooks are left alone. The first time Clawd changes that file it saves a backup as `settings.json.clawd-backup`. The uninstaller removes the hooks too. If Clawd is moved to a different folder, open the Assistant window and press **Reconnect**.
+
 The tray menu, the Assistant window, and what Clawd says follow your Windows display language: Chinese, Japanese (where Clawd speaks Osaka dialect — it's an Osaka crab now), or English everywhere else. The tuning panel itself is in Chinese for now.
+
+**Codex integration** is also available: open **Assistant → Claude Code / Codex**, select **Codex**, and enable it. Requires a local Codex CLI or desktop runtime with [lifecycle hooks](https://learn.chatgpt.com/docs/hooks). It reacts to prompts, tools, compaction, subagents, completion, and interruptions. Failed tools trigger the error reaction when their result includes an error flag or a nonzero shell exit status. The pet can also handle permission requests; uncheck bubble approval to receive reminders and answer in Codex instead. Reaction settings are shared with Claude Code, and both integrations can run together.
+
+Codex hooks are added to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`). Existing hooks are preserved; the first edit backs up the file to `hooks.json.clawd-backup`. After enabling, reconnecting, or changing bubble approval, review and trust the updated hooks in Codex (`/hooks` in the CLI), then restart the session if needed. Turning off the integration or uninstalling the pet removes only its own hooks. Cloud sessions and remote/WSL runtimes cannot connect to this Windows localhost bridge directly.
 
 ### Tuning panel
 
@@ -110,7 +128,7 @@ src/
   debug/      Tuning panel
   platform/   Tauri and browser implementations
   skin/       Skin format and loader
-skins/        Built-in characters: clawd/, dots/
+skins/        Built-in characters: clawd/, dots/, dots-green/, dots-yellow/, dots-pink/
 src-tauri/    Rust: transparent overlay window, tray, desktop window tracking (Win32)
 tests/        Engine tests
 ```
@@ -124,9 +142,16 @@ A skin is a single JSON file: a grid size, a color palette and a list of rectang
 A few optional fields:
 
 - `"render": "smooth"` draws the character at full resolution instead of as pixel art. Parts can then be `"shape": "ellipse"` or `"cloud"`, tilted with `"rot"`, and made furry with `"fur": true`.
+- `"fur"` on the skin controls `length`, `density` (0.4–2), `curl` (0–1), `light` and `shade`. Fur textures are generated once per size and cached.
+- A part's `"fur"` can also be an object with its own settings, as on the blue Dots' dark fabric beret.
+- `"outline": 0.22` on a smooth part draws a hollow frame in grid units. Palette colors can use `#rrggbbaa` for transparent lenses and highlights.
+- Smooth shapes include `pear` for a rounded belly, `onigiri` for a rounded triangle, `frog` for a seamless body with eye hoods, `bow` for a bow tie, and stroked `arch` / `eyelid` paths for headbands and closed eyes. Closed eye parts follow the body without pupil movement or blinking.
+- Eye parts can set `"gaze"` below the default 1 to limit pupil movement within larger eyeballs.
 - `"actions"` picks which idle activities it does, from `laptop`, `stocks`, `coin` and `shake`. Leave it out to get the first three.
 
 See [`skins/clawd/skin.json`](skins/clawd/skin.json) (pixel art) and [`skins/dots/skin.json`](skins/dots/skin.json) (smooth and furry) for examples.
+
+Run `npm run dev` and open `http://localhost:1420/preview.html` to compare all four Dots at large and desktop sizes, including petting and typing poses.
 
 ### License
 
@@ -134,7 +159,7 @@ The engine code is released under the [MIT License](LICENSE).
 
 Clawd is the mascot of Anthropic's Claude Code. This skin is **fan art**, not affiliated with or endorsed by Anthropic. The character is **not** covered by the MIT license. See [`skins/clawd/README.md`](skins/clawd/README.md).
 
-The Dots skin is likewise **fan art** of OpenAI's Dots, not affiliated with or endorsed by OpenAI, and **not** covered by the MIT license. See [`skins/dots/README.md`](skins/dots/README.md).
+The Dots skins are likewise **fan art** of OpenAI's Dots, not affiliated with or endorsed by OpenAI, and **not** covered by the MIT license. See [`skins/dots/README.md`](skins/dots/README.md).
 
 ---
 
@@ -168,7 +193,14 @@ The Dots skin is likewise **fan art** of OpenAI's Dots, not affiliated with or e
 - **待办：** 给待办设个截止时间，到点 Clawd 举着清单牌子来提醒，在气泡上就能直接勾掉。
 - 提醒会在它头顶冒一个对话气泡，它会站在原地等你回应。
 
-**两个形象：** Clawd，以及戴贝雷帽的蓝色毛球 Dots。随时可以在托盘菜单里切换。两个形象的习惯不一样：Dots 不炒股，但时不时会使劲抖一抖毛，甩出几撮毛团。
+**跟 Claude Code 联动**（可选，默认关闭）
+
+- **在小助手窗口里开启**后，Clawd 会跟着 Claude Code 做事：Claude 思考时头顶冒省略号，干活时敲键盘，压缩上下文时扫地，一轮干完后后空翻撒彩纸。
+- **出错会被电一下**；Claude 每派出一个子代理，就从天上掉下一只迷你 Clawd，子代理干活期间它一直敲电脑。
+- **在宠物上批准权限。** Claude Code 要跑命令或改文件时，Clawd 会跑到那个终端窗口上跺脚，气泡上有允许 / 拒绝按钮。如果你直接在终端里处理，气泡会自动收起。
+- 每种反应都可以单独关掉。
+
+**五个形象：** Clawd，加上四款毛茸茸的 Dots：蓝色斜戴贝雷帽、青柠绿色头顶大眼睛配黑领结、黄色圆眼镜配黑领结、粉色耳机闭眼配头顶毛球。在托盘的 **形象** 菜单里随时切换。Dots 用细密短绒和柔和明暗表现蓬松质感，呼吸和走路起伏也更连贯；四款都会敲代码、吃 TOKEN 和抖毛。
 
 ### 下载
 
@@ -190,7 +222,13 @@ The Dots skin is likewise **fan art** of OpenAI's Dots, not affiliated with or e
 | 隐藏 / 显示 | 托盘图标右键 → **隐藏 Clawd** |
 | 调教面板 | 左键点托盘图标 |
 
+**和 Claude Code 联动**时，会在 `~/.claude/settings.json` 的 `hooks` 里加几条，都指向 Clawd。关闭联动会把它们删掉，不动你自己的 hooks。第一次改之前会备份成 `settings.json.clawd-backup`。卸载程序时也会一并删除。如果把 Clawd 挪到了别的目录，打开小助手窗口点 **重新开启** 即可。
+
 托盘菜单、小助手窗口和 Clawd 说的话都跟随 Windows 显示语言：中文系统显示中文，日文系统显示日文（日文版的 Clawd 是只大阪的螃蟹，说关西腔），其他语言显示英文。调教面板目前只有中文。
+
+**和 Codex 联动：** 打开 **小助手 → Claude Code / Codex**，选择 **Codex**，然后开启。需要支持[生命周期 hooks](https://learn.chatgpt.com/docs/hooks) 的本机 Codex CLI 或桌面运行环境。支持思考、工具执行、上下文压缩、子代理、完成和中断；工具结果包含错误标记或非零 shell 退出码时触发被电反应。也可以从气泡处理权限请求；取消勾选气泡批准后，只提醒，仍在 Codex 里选择。反应设置与 Claude Code 共用，两种联动可以同时开启。
+
+Codex 联动写入 `$CODEX_HOME/hooks.json`（默认 `~/.codex/hooks.json`），保留你已有的 hooks，第一次修改前备份为 `hooks.json.clawd-backup`。开启、重新连接或切换气泡批准后，需要在 Codex 里审阅并信任更新后的 hooks（CLI 中使用 `/hooks`），必要时重启会话。关闭联动或卸载桌宠时，只删除桌宠自己的条目。云端会话以及远程 / WSL 运行环境无法直接连接 Windows 的本机桥接服务。
 
 ### 调教面板
 
@@ -224,9 +262,16 @@ npm test              # 引擎单元测试
 几个可选字段：
 
 - `"render": "smooth"`：按实际分辨率平滑绘制，不做像素风。这时部件可以用 `"shape": "ellipse"`（椭圆）或 `"cloud"`（云朵），用 `"rot"` 倾斜，加 `"fur": true` 变成毛茸茸的。
+- 皮肤的 `"fur"` 可调 `length`（毛长）、`density`（密度，0.4～2）、`curl`（弯曲程度，0～1）、`light` 和 `shade`（亮暗毛色）。毛发贴图按尺寸生成并缓存。
+- 部件的 `"fur"` 也可以写成独立的毛发设置对象，例如蓝色 Dots 贝雷帽的深色绒面。
+- 平滑部件的 `"outline": 0.22` 可画空心镜框，宽度以格为单位。调色板支持 `#rrggbbaa`，可以画透明镜片和高光。
+- 平滑形状还支持 `pear`（圆润梨形）、`bow`（领结），以及配合描边使用的 `arch`（耳机头梁）和 `eyelid`（闭眼曲线）。闭眼部件跟着身体动作，不做瞳孔移动或眨眼压缩。
+- 眼睛部件可把 `"gaze"` 调到默认值 1 以下，缩小瞳孔的跟随幅度，让它留在大眼球里面。
 - `"actions"`：挑选会做的小动作，可选 `laptop`（敲代码）、`stocks`（炒股）、`coin`（吃TOKEN）、`shake`（抖毛）。不写就是前三个。
 
 可以参考 [`skins/clawd/skin.json`](skins/clawd/skin.json)（像素风）和 [`skins/dots/skin.json`](skins/dots/skin.json)（平滑、毛茸茸）。
+
+运行 `npm run dev`，打开 `http://localhost:1420/preview.html` 可以并排检查四款 Dots 的放大效果、桌面大小、摸摸和敲代码姿势。
 
 ### 许可
 

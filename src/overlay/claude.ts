@@ -4,7 +4,7 @@
 //   要你批准 → 跑到那个终端窗口上跺脚，头顶气泡上可以直接点允许/拒绝
 
 import { AgentTracker, type CcEvent, type CcPermission, type Reaction, folderName } from '../claude/agent';
-import { T } from '../assistant/i18n';
+import { T, pick } from '../assistant/i18n';
 import type { ClaudeSettings } from '../assistant/model';
 import type { Pet } from '../engine/pet';
 import { type Bus, ccDecide } from '../platform/host';
@@ -18,6 +18,8 @@ const DONE_BUBBLE_MS = 30000;
 const DONE_BUBBLE_SHOW = 8000;
 /** 被电的冷却：连着失败好几次别一直电 */
 const ZAP_COOLDOWN = 10000;
+const agentText = (text: string, provider?: 'claude' | 'codex') =>
+  provider === 'codex' ? text.replace(/Claude(?: Code)?/g, 'Codex') : text;
 
 /** 发给小助手窗口的联动状态 */
 export interface ClaudeLive {
@@ -43,6 +45,19 @@ export class ClaudeLink {
     this.bus.on('cc-permission', (p: CcPermission) => this.onPermission(p));
     this.bus.on('cc-permission-gone', (m: { id: number }) => this.dropPermission(m.id));
     this.bus.on('cc-hello', () => this.publish());
+    this.bus.on('cc-disconnect', (provider: 'claude' | 'codex') => {
+      for (const [id, p] of this.perms) {
+        if ((p.provider ?? 'claude') === provider) {
+          void ccDecide(id, 'pass');
+          this.dropPermission(id);
+        }
+      }
+      for (const s of this.tracker.list()) {
+        if ((s.provider ?? 'claude') === provider) {
+          this.onEvent({ event: 'SessionEnd', session_id: s.id, provider, cwd: s.cwd, t: Date.now() });
+        }
+      }
+    });
     window.setInterval(() => this.updateMood(), 2000);
   }
 
@@ -70,7 +85,7 @@ export class ClaudeLink {
           this.bubbles.post({
             key: `done:${r.session}`,
             kind: 'claude',
-            title: T.ccDone(folderName(r.cwd)),
+            title: agentText(T.ccDone(folderName(r.cwd)), r.provider),
             body: r.last,
             buttons: [],
             hideAfter: DONE_BUBBLE_SHOW,
@@ -97,7 +112,7 @@ export class ClaudeLink {
         this.bubbles.post({
           key: `attn:${r.session}`,
           kind: 'claude',
-          title: T.ccWaiting,
+          title: agentText(T.ccWaiting, r.provider),
           body: [folderName(r.cwd), r.message].filter(Boolean).join('\n'),
           buttons: [{ label: T.gotIt, primary: true, run: () => {} }],
           priority: 1,
@@ -127,8 +142,8 @@ export class ClaudeLink {
     this.bubbles.post({
       key: `perm:${p.id}`,
       kind: 'claude',
-      title: T.ccPermTitle(p.tool_name ?? ''),
-      body: `${folderName(p.cwd)} · ${T.ccPermHint}`,
+      title: agentText(T.ccPermTitle(p.tool_name === 'apply_patch' ? 'Edit' : p.tool_name ?? ''), p.provider),
+      body: `${folderName(p.cwd)} · ${p.provider === 'codex' ? pick({ zh: '关掉气泡 = 回 Codex 里自己选', ja: '吹き出しを閉じたら、Codex側で選べるで', en: 'Close the bubble to answer in Codex' }) : T.ccPermHint}`,
       code: p.tool,
       buttons: [
         { label: T.ccAllow, primary: true, run: () => decide('allow') },

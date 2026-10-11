@@ -9,6 +9,9 @@ import {
   ccInstall,
   ccStatus,
   ccUninstall,
+  codexInstall,
+  codexStatus,
+  codexUninstall,
   createBus,
   loadAssistant,
   pickIcsFile,
@@ -318,12 +321,18 @@ async function main() {
 
   let cc: CcStatus | null = null;
   let live: ClaudeLive | null = null;
+  const providerSelect = $<HTMLSelectElement>('ccProvider');
+  let provider: 'claude' | 'codex' = 'claude';
+  const linkText = (text: string) => provider === 'codex' ? text.replace(/Claude(?: Code)?/g, 'Codex') : text;
+  let refreshing = 0;
   const permBox = $<HTMLInputElement>('ccPermission');
   permBox.checked = true;
   const agoText = (t: number) => W.ago(Math.max(0, Math.round((Date.now() - t) / 1000)));
 
   function renderClaude() {
     if (!cc) return;
+    $('ccLink').textContent = linkText(W.ccLink);
+    $('ccTestHint').textContent = linkText(W.ccTestHint);
     const state = $('ccState');
     const toggle = $<HTMLButtonElement>('ccToggle');
     const h = cc.hooks;
@@ -342,15 +351,17 @@ async function main() {
     } else {
       text = W.ccOff;
     }
-    state.textContent = text;
+    state.textContent = linkText(text);
     state.className = cls;
     state.style.whiteSpace = 'pre-line';
     toggle.textContent = h.installed ? (h.current ? W.ccDisable : W.ccReinstall) : W.ccEnable;
     toggle.className = h.installed && h.current ? '' : 'primary';
     toggle.disabled = !!cc.bridge_error && !h.installed;
-    $('ccHint').textContent = W.ccHint(h.settings_path);
+    $('ccHint').textContent = provider === 'codex' ? W.codexHint(h.settings_path) : W.ccHint(h.settings_path);
+    const permLabel = permBox.parentElement?.querySelector('span');
+    if (permLabel) permLabel.textContent = linkText(W.ccPermission);
 
-    const sessions = live?.sessions ?? [];
+    const sessions = (live?.sessions ?? []).filter((s) => (s.provider ?? 'claude') === provider);
     $('ccSessions').replaceChildren(
       ...sessions.map((s) => {
         const mood = `${W.ccMood[s.mood] ?? s.mood}${s.subagents ? W.ccSubagents(s.subagents) : ''} · ${agoText(s.last)}`;
@@ -368,11 +379,16 @@ async function main() {
       }),
     );
     $('ccNoSessions').hidden = sessions.length > 0;
+    $('ccNoSessions').textContent = linkText(W.ccNoSessions);
   }
 
   async function refreshClaude() {
+    const selected = provider;
+    const request = ++refreshing;
     try {
-      cc = await ccStatus();
+      const status = await (selected === 'codex' ? codexStatus() : ccStatus());
+      if (selected !== provider || request !== refreshing) return;
+      cc = status;
       if (cc.hooks.installed) permBox.checked = cc.hooks.permission;
     } catch (e) {
       note(String(e));
@@ -380,10 +396,22 @@ async function main() {
     renderClaude();
   }
 
+  providerSelect.onchange = () => {
+    provider = providerSelect.value === 'codex' ? 'codex' : 'claude';
+    cc = null;
+    permBox.checked = true;
+    $<HTMLButtonElement>('ccToggle').disabled = true;
+    void refreshClaude();
+  };
+
   $('ccToggle').onclick = async () => {
+    const selected = provider;
+    $<HTMLButtonElement>('ccToggle').disabled = true;
     try {
-      if (cc?.hooks.installed && cc.hooks.current) await ccUninstall();
-      else await ccInstall(permBox.checked);
+      if (cc?.hooks.installed && cc.hooks.current) {
+        await (selected === 'codex' ? codexUninstall() : ccUninstall());
+        bus.emit('cc-disconnect', selected);
+      } else await (selected === 'codex' ? codexInstall(permBox.checked) : ccInstall(permBox.checked));
     } catch (e) {
       note(String(e));
     }
@@ -392,7 +420,7 @@ async function main() {
   permBox.onchange = async () => {
     if (!cc?.hooks.installed) return;
     try {
-      await ccInstall(permBox.checked);
+      await (provider === 'codex' ? codexInstall(permBox.checked) : ccInstall(permBox.checked));
     } catch (e) {
       note(String(e));
     }
@@ -410,25 +438,27 @@ async function main() {
   }, 5000);
 
   // 试一下：在本地编几条 Claude Code 事件发给覆盖层
-  const testSession = 'clawd-test';
+  const testSession = () => provider === 'codex' ? 'codex:clawd-test' : 'clawd-test';
   const testCwd = pick({ zh: '~/示例项目', ja: '~/サンプル', en: '~/demo-project' });
   const fake = (event: string, extra: Record<string, unknown> = {}) =>
-    bus.emit('cc-event', { event, session_id: testSession, cwd: testCwd, t: Date.now(), ...extra });
+    bus.emit('cc-event', { event, provider, session_id: testSession(), cwd: testCwd, t: Date.now(), ...extra });
   let subN = 0;
   const tests: Record<string, () => void> = {
     think: () => fake('UserPromptSubmit'),
     work: () => fake('PreToolUse', { tool_name: 'Bash', tool: 'npm test' }),
-    sub: () => fake('SubagentStart', { agent_id: `test-${++subN}`, agent_type: 'general-purpose' }),
+    sub: () => fake('SubagentStart', { agent_id: `${testSession()}:test-${++subN}`, agent_type: 'general-purpose' }),
     compact: () => {
       fake('PreCompact', { trigger: 'manual' });
-      window.setTimeout(() => fake('PostCompact', { trigger: 'manual' }), 5000);
+      const event = { event: 'PostCompact', provider, session_id: testSession(), cwd: testCwd, trigger: 'manual' };
+      window.setTimeout(() => bus.emit('cc-event', { ...event, t: Date.now() }), 5000);
     },
     error: () => fake('PostToolUseFailure', { tool_name: 'Bash', tool: 'npm test', error: 'Exit code 1' }),
     perm: () =>
       bus.emit('cc-permission', {
         id: -Date.now(),
         event: 'PermissionRequest',
-        session_id: testSession,
+        provider,
+        session_id: testSession(),
         cwd: testCwd,
         t: Date.now(),
         tool_name: 'Bash',

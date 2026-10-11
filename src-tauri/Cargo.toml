@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

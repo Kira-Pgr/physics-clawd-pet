@@ -8,8 +8,8 @@ export type PartRole = 'body' | 'eye' | 'arm' | 'leg';
 export const PART_ROLES: readonly PartRole[] = ['body', 'eye', 'arm', 'leg'];
 
 /** 平滑画风下部件的形状；像素画风一律按矩形画 */
-export type PartShape = 'rect' | 'ellipse' | 'cloud';
-export const PART_SHAPES: readonly PartShape[] = ['rect', 'ellipse', 'cloud'];
+export type PartShape = 'rect' | 'ellipse' | 'cloud' | 'pear' | 'onigiri' | 'frog' | 'bow' | 'arch' | 'eyelid';
+export const PART_SHAPES: readonly PartShape[] = ['rect', 'ellipse', 'cloud', 'pear', 'onigiri', 'frog', 'bow', 'arch', 'eyelid'];
 
 export interface SkinPartDef {
   id: string;
@@ -22,8 +22,12 @@ export interface SkinPartDef {
   shape?: PartShape;
   /** 仅平滑画风：绕部件中心旋转的角度（度，顺时针） */
   rot?: number;
-  /** 仅平滑画风：画成毛茸茸的（毛的样子见 SkinDef.fur） */
-  fur?: boolean;
+  /** 仅平滑画风：true 使用皮肤毛发设置，也可为配饰单独指定毛发 */
+  fur?: boolean | FurDef;
+  /** 仅平滑画风：空心描边的宽度（格），比如眼镜框 */
+  outline?: number;
+  /** 眼睛跟随光标的位移倍率，默认 1；大眼球可减小，避免瞳孔跑出眼白 */
+  gaze?: number;
 }
 
 export interface FurDef {
@@ -32,6 +36,10 @@ export interface FurDef {
   /** 受光面和背光面的毛色；不写就用部件颜色调亮/调暗 */
   light?: string;
   shade?: string;
+  /** 毛发密度倍率，渲染时限制在 0.4～2，贴图生成后缓存 */
+  density?: number;
+  /** 毛发弯曲程度，0（直毛）～1 */
+  curl?: number;
 }
 
 export interface SkinDef {
@@ -109,6 +117,8 @@ export function loadSkin(def: SkinDef): Skin {
     if (!PART_ROLES.includes(p.role)) throw new Error(`未知部件角色: ${p.role}`);
     if (!(p.color in def.palette)) throw new Error(`部件 ${p.id} 用了不存在的颜色 ${p.color}`);
     if (p.shape && !PART_SHAPES.includes(p.shape)) throw new Error(`部件 ${p.id} 的形状未知: ${p.shape}`);
+    if (p.outline !== undefined && (!Number.isFinite(p.outline) || p.outline <= 0)) throw new Error(`部件 ${p.id} 的描边必须是正数`);
+    if (p.gaze !== undefined && (!Number.isFinite(p.gaze) || p.gaze < 0)) throw new Error(`部件 ${p.id} 的视线倍率必须是非负数`);
     byRole.set(p.role, [...(byRole.get(p.role) ?? []), p]);
   }
   const cx = gw / 2;

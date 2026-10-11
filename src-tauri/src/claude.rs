@@ -72,7 +72,8 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// `clawd-pet.exe --clawd-pet-hook <端口> <令牌>`：返回进程退出码（总是 0，失败也不打扰 Claude Code）
 pub fn hook_main(args: &[String]) -> i32 {
-    let i = args.iter().position(|a| a == MARKER).unwrap_or(0);
+    let codex = args.iter().any(|a| a == crate::codex::MARKER);
+    let i = args.iter().position(|a| a == MARKER || a == crate::codex::MARKER).unwrap_or(0);
     let port: u16 = args.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(PORT);
     let token = args.get(i + 2).cloned().unwrap_or_default();
 
@@ -80,7 +81,9 @@ pub fn hook_main(args: &[String]) -> i32 {
     let _ = std::io::stdin().take(16 * 1024 * 1024).read_to_string(&mut input);
     // 经过 PowerShell 管道转来的输入可能带 UTF-8 BOM
     let Ok(v) = serde_json::from_str::<Value>(input.trim_start_matches('\u{feff}')) else { return 0 };
-    let mut msg = summarize(&v);
+    let mut msg = if codex {
+        crate::codex::summarize(&v, args.iter().any(|a| a == crate::codex::OBSERVE_PERMISSION))
+    } else { summarize(&v) };
     msg.insert("token".into(), Value::String(token));
     msg.insert("ancestors".into(), json!(ancestor_pids()));
     let is_permission = msg.get("event").and_then(Value::as_str) == Some("PermissionRequest");
@@ -108,7 +111,7 @@ pub fn hook_main(args: &[String]) -> i32 {
 }
 
 /// 从 hook 输入里挑出宠物要用的字段，大的内容（文件正文、工具输出）一律不带
-fn summarize(v: &Value) -> Map<String, Value> {
+pub(crate) fn summarize(v: &Value) -> Map<String, Value> {
     let s = |k: &str| v.get(k).and_then(Value::as_str);
     let mut m = Map::new();
     let mut put = |k: &str, val: Value| {
@@ -155,6 +158,7 @@ fn tool_summary(name: &str, input: Option<&Value>) -> String {
     let s = |k: &str| input.get(k).and_then(Value::as_str);
     let text = match name {
         "Bash" | "PowerShell" => s("command").map(str::to_string),
+        "apply_patch" => s("command").map(str::to_string),
         "Edit" | "Write" | "MultiEdit" | "Read" | "NotebookEdit" => {
             s("file_path").or(s("notebook_path")).map(str::to_string)
         }
@@ -223,6 +227,7 @@ pub struct Bridge {
     pub error: Mutex<Option<String>>,
     /// 上一次收到事件的时间（ms）
     pub last_event: AtomicU64,
+    pub last_codex_event: AtomicU64,
 }
 
 impl Bridge {
@@ -233,6 +238,7 @@ impl Bridge {
             next_id: AtomicU64::new(1),
             error: Mutex::new(None),
             last_event: AtomicU64::new(0),
+            last_codex_event: AtomicU64::new(0),
         })
     }
 
@@ -294,7 +300,10 @@ impl Bridge {
         if !same(&token, &self.token) {
             return;
         }
-        self.last_event.store(now_ms(), Ordering::Relaxed);
+        let last = if msg.get("provider").and_then(Value::as_str) == Some("codex") {
+            &self.last_codex_event
+        } else { &self.last_event };
+        last.store(now_ms(), Ordering::Relaxed);
         let ancestors: Vec<u32> = msg
             .remove("ancestors")
             .and_then(|a| serde_json::from_value(a).ok())
