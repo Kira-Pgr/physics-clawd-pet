@@ -8,6 +8,7 @@ use objc2::msg_send;
 use objc2::runtime::NSObjectProtocol;
 use objc2::sel;
 use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+use objc2_core_foundation::{CFArray, CFLocale, CFRetained, CFString};
 use tauri::{ActivationPolicy, Manager, WebviewWindow};
 
 use crate::lang::Lang;
@@ -19,9 +20,20 @@ pub use desktop::{
 };
 pub use input::InputProbe;
 
-// TODO(macOS)：没有单实例保护，可以开好几只
+/// 只允许一只宠物：第二个实例直接退出（返回 false）。
+/// 锁住临时目录（每个用户各一个）里的一个文件；文件故意不关，进程退出（包括崩溃）时系统自动解锁。
+/// 文件打不开就照常运行：宁可多开也别开不起来。
 pub fn single_instance() -> bool {
-    true
+    lock_file(&std::env::temp_dir().join("PhysicsClawdPet.SingleInstance.lock"))
+}
+
+fn lock_file(path: &std::path::Path) -> bool {
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) else {
+        return true;
+    };
+    let locked = file.try_lock().is_ok();
+    std::mem::forget(file);
+    locked
 }
 
 /// 我们自己窗口的 CGWindowID（= NSWindow.windowNumber）
@@ -56,16 +68,76 @@ pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
-// TODO(macOS)：从 Finder 启动的程序没有 LANG，要改问 NSLocale.preferredLanguages
+/// 系统设置里"首选语言"的第一个。网页里的 navigator.language 也是从这儿来的，两边一致。
+/// （图形界面启动的程序没有 LANG 环境变量，不能看它。）
 pub fn ui_language() -> Lang {
-    match std::env::var("LANG") {
-        Ok(l) if l.starts_with("zh") => Lang::Zh,
-        Ok(l) if l.starts_with("ja") => Lang::Ja,
+    let first = CFLocale::preferred_languages()
+        .map(|list| unsafe { CFRetained::cast_unchecked::<CFArray<CFString>>(list) })
+        .and_then(|list| list.get(0))
+        .map(|tag| tag.to_string())
+        .unwrap_or_default();
+    from_tag(&first)
+}
+
+/// "zh-Hans-CN"、"ja-JP"、"en-US" 这种语言标签：只看主语言（简体繁体都算中文）
+fn from_tag(tag: &str) -> Lang {
+    match tag.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "zh" => Lang::Zh,
+        "ja" => Lang::Ja,
         _ => Lang::En,
     }
 }
 
-// TODO(macOS)：找不到祖先进程，Claude Code 气泡就不知道跟着哪个终端窗口
+/// 本进程往上的祖先进程（父、祖父……），用来找是哪个窗口在跑 Claude Code
 pub fn ancestor_pids() -> Vec<u32> {
-    vec![]
+    let mut out = Vec::new();
+    let mut pid = std::process::id();
+    for _ in 0..16 {
+        match parent_pid(pid) {
+            Some(pp) if pp != 0 && pp != pid && !out.contains(&pp) => {
+                out.push(pp);
+                pid = pp;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, &mut info as *mut _ as *mut libc::c_void, size)
+    };
+    (n == size).then_some(info.pbi_ppid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_tag_maps_primary_language() {
+        assert_eq!(from_tag("ja-JP"), Lang::Ja);
+        assert_eq!(from_tag("zh-Hans-CN"), Lang::Zh);
+        assert_eq!(from_tag("zh-Hant-TW"), Lang::Zh);
+        assert_eq!(from_tag("zh_CN"), Lang::Zh);
+        assert_eq!(from_tag("en-US"), Lang::En);
+        assert_eq!(from_tag("ko-KR"), Lang::En); // 韩文归到英文
+        assert_eq!(from_tag(""), Lang::En);
+    }
+
+    #[test]
+    fn first_ancestor_is_the_parent() {
+        assert_eq!(ancestor_pids().first().copied(), Some(std::os::unix::process::parent_id()));
+    }
+
+    #[test]
+    fn second_lock_on_the_same_file_fails() {
+        let path = std::env::temp_dir().join(format!("clawd-lock-test-{}", std::process::id()));
+        assert!(lock_file(&path));
+        assert!(!lock_file(&path), "同一个文件第二次锁不上");
+        let _ = std::fs::remove_file(path);
+    }
 }
