@@ -15,6 +15,50 @@ impl Rect {
     pub fn height(&self) -> i32 {
         self.bottom - self.top
     }
+    /// 外接矩形
+    pub fn union(&self, o: &Rect) -> Rect {
+        Rect {
+            left: self.left.min(o.left),
+            top: self.top.min(o.top),
+            right: self.right.max(o.right),
+            bottom: self.bottom.max(o.bottom),
+        }
+    }
+}
+
+/// 一块显示器（物理像素）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Screen {
+    /// 整块屏幕
+    pub monitor: Rect,
+    /// 去掉任务栏（macOS：菜单栏和程序坞）之后的工作区
+    pub work: Rect,
+    pub primary: bool,
+}
+
+/// 覆盖层的摆法：宠物能去的屏幕，以及覆盖层要铺的范围（这些屏幕工作区的外接矩形）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub rect: Rect,
+    pub screens: Vec<Screen>,
+}
+
+/// 被全屏程序占着的屏幕不让宠物去，覆盖层也不盖上去（免得挡住全屏游戏的独占翻转）。
+/// 一块能去的都没有返回 None（隐藏覆盖层）。
+pub fn layout(screens: &[Screen], fullscreen: &[Rect]) -> Option<Layout> {
+    let screens: Vec<Screen> = screens.iter().filter(|s| !fullscreen.contains(&s.monitor)).copied().collect();
+    let rect = screens.iter().map(|s| s.work).reduce(|a, b| a.union(&b))?;
+    Some(Layout { rect, screens })
+}
+
+/// 覆盖层从 (old, old_scale) 挪到 (new, new_scale) 后，同一个屏幕上的点 CSS 坐标怎么变：
+/// 新 = 旧 × k + (dx, dy)
+pub fn remap(old: Rect, old_scale: f64, new: Rect, new_scale: f64) -> (f64, f64, f64) {
+    (
+        old_scale / new_scale,
+        (old.left - new.left) as f64 / new_scale,
+        (old.top - new.top) as f64 / new_scale,
+    )
 }
 
 /// 一个顶层窗口。`platform` 表示它的顶边可以站人；不能站的窗口仍然参与遮挡计算。
@@ -116,6 +160,36 @@ mod tests {
         max.platform = true;
         let wins = [max, win(1, 200, 300, 1000, 800)];
         assert!(platform_segments(&wins, AREA, 10).is_empty());
+    }
+
+    fn screen(l: i32, t: i32, r: i32, b: i32, taskbar: i32, primary: bool) -> Screen {
+        let monitor = Rect { left: l, top: t, right: r, bottom: b };
+        Screen { monitor, work: Rect { bottom: b - taskbar, ..monitor }, primary }
+    }
+
+    #[test]
+    fn overlay_spans_every_screen_not_taken_by_a_fullscreen_app() {
+        let main = screen(0, 0, 1920, 1080, 48, true);
+        let side = screen(1920, -200, 4480, 1240, 48, false);
+        let all = layout(&[main, side], &[]).unwrap();
+        assert_eq!(all.rect, Rect { left: 0, top: -200, right: 4480, bottom: 1192 });
+        assert_eq!(all.screens.len(), 2);
+
+        let only_main = layout(&[main, side], &[side.monitor]).unwrap();
+        assert_eq!(only_main.rect, main.work);
+        assert_eq!(only_main.screens, vec![main]);
+
+        assert!(layout(&[main, side], &[main.monitor, side.monitor]).is_none());
+    }
+
+    #[test]
+    fn remap_keeps_points_on_the_same_physical_pixel() {
+        let old = Rect { left: 0, top: 0, right: 3840, bottom: 1032 };
+        let new = Rect { left: 1920, top: 0, right: 3840, bottom: 1032 };
+        // 物理像素 2400 在旧覆盖层（缩放 1.5）里是 CSS 1600，在新覆盖层（缩放 1）里是 480
+        let (k, dx, dy) = remap(old, 1.5, new, 1.0);
+        assert!((1600.0 * k + dx - 480.0).abs() < 1e-9);
+        assert_eq!(dy, 0.0);
     }
 
     #[test]

@@ -4,6 +4,9 @@
 //! 坐标和 Tauri 一致："物理像素" = 点 × 主屏的 backingScaleFactor，原点在主屏左上角。
 //! CoreGraphics 给的都是这种左上角原点的点坐标，乘上主屏缩放就行；
 //! 宠物只在主屏上活动，别的屏缩放不一样也没关系。窗口 id 是 CGWindowID。
+//!
+//! 为什么不跨屏：macOS 默认"每块显示器有单独的空间"，一个窗口只会出现在一块屏幕上，
+//! 铺满几块屏幕的覆盖层在这儿行不通。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +19,7 @@ use objc2_core_graphics::{
     CGWindowListOption,
 };
 
-use crate::desktop::{Rect, WinInfo};
+use crate::desktop::{Rect, Screen, WinInfo};
 
 /// 普通程序窗口的层级（kCGNormalWindowLevel）
 const NORMAL_LAYER: i64 = 0;
@@ -76,8 +79,20 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
 }
 
 /// 主屏工作区（不含菜单栏和程序坞），物理像素
-pub fn primary_work_area() -> Option<Rect> {
+fn primary_work_area() -> Option<Rect> {
     primary_screen().map(|(r, _)| r)
+}
+
+/// 主屏整屏，物理像素
+fn primary_monitor() -> Rect {
+    to_rect(CGDisplayBounds(CGMainDisplayID()), scale())
+}
+
+/// 宠物能去的屏幕：只有主屏（见文件开头）
+pub fn screens() -> Vec<Screen> {
+    primary_work_area()
+        .map(|work| vec![Screen { monitor: primary_monitor(), work, primary: true }])
+        .unwrap_or_default()
 }
 
 /// 覆盖层只在主屏上，就是主屏的缩放
@@ -193,10 +208,19 @@ pub fn window_for_pids(pids: &[u32]) -> Option<isize> {
     pids.iter().find_map(|p| by_pid.get(p).copied())
 }
 
+/// 有全屏程序的屏幕（只看主屏），返回整屏矩形
+pub fn fullscreen_monitors(skip: isize) -> Vec<Rect> {
+    if fullscreen_on_primary(skip) {
+        vec![primary_monitor()]
+    } else {
+        vec![]
+    }
+}
+
 /// 主屏上是否有全屏程序在前台（全屏视频、演示、游戏）。
 /// 原生全屏的程序在自己的 Space 里，覆盖层本来就不会出现在那儿；认出来是为了让前端暂停，和 Windows 一致。
 /// 最大化（zoom）的窗口不盖菜单栏，不算全屏。
-pub fn fullscreen_on_primary(skip: isize) -> bool {
+fn fullscreen_on_primary(skip: isize) -> bool {
     let display = CGDisplayBounds(CGMainDisplayID());
     let covers = |b: &CGRect| {
         b.origin.x <= display.origin.x

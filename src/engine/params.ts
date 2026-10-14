@@ -114,6 +114,7 @@ export const DEFAULT_TUNING = {
   // 调试显示
   showHitbox: 0,
   showVelocity: 0,
+  simScreens: 0,
 };
 
 export type Tuning = typeof DEFAULT_TUNING;
@@ -249,6 +250,12 @@ export const PARAM_DEFS: ParamDef[] = [
 
   b('调试显示', 'showHitbox', '显示碰撞盒/状态'),
   b('调试显示', 'showVelocity', '显示速度向量'),
+  b(
+    '调试显示',
+    'simScreens',
+    '模拟双屏（只有一块屏幕时）',
+    '把这块屏幕切成一高一矮两块假屏幕，灰色斜线区域当作屏幕之间的空当，不用第二块显示器也能试跨屏',
+  ),
 ];
 
 /**

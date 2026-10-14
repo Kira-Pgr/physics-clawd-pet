@@ -2,7 +2,7 @@
 // 谁都可以往里发：小助手的提醒、Claude Code 的权限请求……
 
 import { T } from '../assistant/i18n';
-import type { Pet } from '../engine/pet';
+import type { Bounds, Pet } from '../engine/pet';
 import type { HitRect } from '../platform/host';
 
 const GAP_MS = 400;
@@ -56,6 +56,8 @@ export class Bubbles {
     private anchor: () => HitRect | null,
     /** 覆盖层被隐藏（全屏免打扰、手动隐藏） */
     private hidden: () => boolean,
+    /** 宠物所在的那块屏幕：气泡摆在这块屏幕里面 */
+    private screen: () => Bounds,
   ) {}
 
   get current(): BubbleItem | null {
@@ -199,20 +201,19 @@ export class Bubbles {
     window.setTimeout(() => s.el.remove(), 200);
   }
 
-  /** 放在宠物头顶（放不下就放脚下），水平方向夹在屏幕里，小尾巴指着宠物 */
+  /** 放在宠物头顶（放不下就放脚下），水平方向夹在宠物所在的那块屏幕里，小尾巴指着宠物 */
   private place(): HitRect | null {
     const s = this.shown;
     const a = this.anchor();
     if (!s || !a) return null;
-    const W = window.innerWidth;
-    const H = window.innerHeight;
+    const b = this.screen();
     const margin = 8;
     const gap = 14;
     const cx = (a[0] + a[2]) / 2;
-    const left = Math.round(Math.min(W - s.w - margin, Math.max(margin, cx - s.w / 2)));
+    const left = Math.round(Math.min(b.right - s.w - margin, Math.max(b.left + margin, cx - s.w / 2)));
     let top = a[1] - gap - s.h;
-    const below = top < margin;
-    if (below) top = Math.min(H - s.h - margin, a[3] + gap);
+    const below = top < b.top + margin;
+    if (below) top = Math.min(b.bottom - s.h - margin, a[3] + gap);
     top = Math.round(top);
     const tail = Math.round(Math.min(s.w - 16, Math.max(16, cx - left)));
     s.el.style.transform = `translate(${left}px, ${top}px)`;

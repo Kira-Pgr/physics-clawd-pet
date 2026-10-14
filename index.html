@@ -28,6 +28,18 @@
         display: block;
         touch-action: none;
       }
+      /* 调试"模拟双屏"：屏幕之间的空当（在画布下面，不挡点击） */
+      .sim-screens {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        pointer-events: none;
+      }
+      .sim-screens text {
+        fill: #d77757;
+        font: 600 13px var(--ui-font);
+      }
       /* 小助手的提醒气泡：位置由 companion.ts 每帧用 transform 摆 */
       .bubble {
         --accent: #d77757;

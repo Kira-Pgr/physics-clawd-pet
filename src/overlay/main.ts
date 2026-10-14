@@ -1,8 +1,18 @@
 import { type Vec2, clamp } from '../engine/math';
 import { DEFAULT_TUNING, PARAM_DEFS, cellSize, mergeTuning, type Tuning } from '../engine/params';
 import { ParticleSystem } from '../engine/particles';
-import { ACTIVITIES, type Activity, type Bounds, CUES, type Cue, type LaunchState, Pet } from '../engine/pet';
+import {
+  ACTIVITIES,
+  type Activity,
+  type Bounds,
+  CUES,
+  type Cue,
+  type LaunchState,
+  Pet,
+  type Platform,
+} from '../engine/pet';
 import { VelocitySampler } from '../engine/throw';
+import { buildWorld, clipToScreens, screenAt } from '../engine/world';
 import {
   type CarrierSample,
   createBus,
@@ -12,6 +22,7 @@ import {
   loadTuning,
   openDebugPanel,
   saveTuning,
+  type ScreenInfo,
 } from '../platform/host';
 import { Renderer } from '../render/renderer';
 import { SKINS, findSkin } from '../skin/registry';
@@ -53,12 +64,32 @@ export interface Telemetry {
   /** 脚下窗口的速度 */
   carrierSpeed: number;
   platforms: number;
+  /** 宠物在第几块屏幕上（从 1 数）/ 一共几块 */
+  screen: number;
+  screens: number;
   /** 正在输入的输入框 [left, top, right, bottom]，没有为 null */
   input: [number, number, number, number] | null;
   fleeing: boolean;
 }
 
-/** 可重复的测试投掷（相对屏幕尺寸），调参时用来做 A/B 对比 */
+/** 窗口顶边至少这么长（CSS 像素）才算能站，和原生侧一致 */
+const MIN_PLATFORM = 40;
+
+/**
+ * 调试"模拟双屏"：把一块屏幕切成一高一矮两块假屏幕（右边那块上下都缩进去一截），
+ * 拼出台阶、边沿和屏幕之间的空当，不用第二块显示器也能试跨屏。
+ */
+function simulateScreens(s: Bounds): Bounds[] {
+  const w = s.right - s.left;
+  const h = s.bottom - s.top;
+  const mid = Math.round(s.left + w * 0.55);
+  return [
+    { left: s.left, top: s.top, right: mid, bottom: s.bottom },
+    { left: mid, top: s.top + Math.round(h * 0.18), right: s.right, bottom: s.bottom - Math.round(h * 0.25) },
+  ];
+}
+
+/** 可重复的测试投掷（相对宠物所在那块屏幕的尺寸），调参时用来做 A/B 对比 */
 const PRESETS: Record<string, (w: number, h: number) => LaunchState> = {
   drop: (w, h) => ({ x: w * 0.5, y: h * 0.08, vx: 0, vy: 0, rot: 0, angVel: 0 }),
   throwRight: (w, h) => ({ x: w * 0.25, y: h * 0.55, vx: 3200, vy: -900, rot: 0, angVel: 6 }),
@@ -78,8 +109,11 @@ async function main() {
   let tuning: Tuning = mergeTuning(DEFAULT_TUNING, saved);
   let skin = findSkin(saved?.skin);
 
-  const bounds = (): Bounds => ({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight });
-  const pet = new Pet(tuning, skin.grid, bounds());
+  // 屏幕：原生侧推过来之前先当整个覆盖层是一块
+  let screens: ScreenInfo[] = [
+    { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, primary: true },
+  ];
+  const pet = new Pet(tuning, skin.grid, screens);
   const particles = new ParticleSystem();
   const renderer = new Renderer(canvas, skin);
   /** Claude Code 的子代理：迷你 Clawd */
@@ -98,10 +132,10 @@ async function main() {
   applySkin();
   const sampler = new VelocitySampler();
 
+  // 屏幕范围由 onScreens 管，这里只管画布大小和像素比
   const resize = () => {
     renderer.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1);
     pet.setPixelRatio(window.devicePixelRatio || 1);
-    pet.setBounds(bounds());
   };
   const watchDpr = () => {
     matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener(
@@ -121,9 +155,91 @@ async function main() {
   pet.dropFrom(window.innerWidth * 0.5, window.innerHeight * 0.1);
   if (import.meta.env.DEV) Object.assign(window, { __clawd: { pet, particles, renderer, minis } });
 
-  // ---------- 桌面：窗口平台、脚下窗口追踪、全屏免打扰 ----------
+  // ---------- 桌面：屏幕、窗口平台、脚下窗口追踪、全屏免打扰 ----------
 
-  host.onPlatforms((list) => pet.setPlatforms(list));
+  /** 宠物活动的屏幕（模拟双屏时是切出来的假屏幕），第一块是主屏 */
+  let world: Bounds[] = screens;
+  let rawPlatforms: Platform[] = [];
+  let simLayer: SVGSVGElement | null = null;
+  const home = () => world[0];
+
+  const dropHome = () => {
+    const s = home();
+    particles.clear();
+    pet.dropFrom((s.left + s.right) / 2, s.top + (s.bottom - s.top) * 0.1);
+  };
+
+  /** 模拟双屏：屏幕之间的空当画成灰色斜线，假屏幕画虚线框 */
+  const drawSimScreens = (list: Bounds[] | null) => {
+    if (!list) {
+      simLayer?.remove();
+      simLayer = null;
+      return;
+    }
+    const ns = 'http://www.w3.org/2000/svg';
+    if (!simLayer) {
+      simLayer = document.createElementNS(ns, 'svg');
+      simLayer.classList.add('sim-screens');
+      document.body.prepend(simLayer);
+    }
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const holes = list.map((s) => `M${s.left} ${s.top}H${s.right}V${s.bottom}H${s.left}Z`).join('');
+    simLayer.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    simLayer.innerHTML =
+      '<defs><pattern id="sim-hatch" width="14" height="14" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">' +
+      '<rect width="14" height="14" fill="rgba(20,20,19,0.28)"/><rect width="5" height="14" fill="rgba(20,20,19,0.22)"/>' +
+      '</pattern></defs>' +
+      `<path d="M0 0H${W}V${H}H0Z${holes}" fill="url(#sim-hatch)" fill-rule="evenodd"/>` +
+      list
+        .map(
+          (s, i) =>
+            `<rect x="${s.left + 1}" y="${s.top + 1}" width="${s.right - s.left - 2}" height="${s.bottom - s.top - 2}" ` +
+            'fill="none" stroke="#d77757" stroke-width="2" stroke-dasharray="8 6"/>' +
+            `<text x="${s.left + 10}" y="${s.top + 22}">模拟屏幕 ${i + 1}</text>`,
+        )
+        .join('');
+  };
+
+  /** 按 screens（和"模拟双屏"开关）重新拼世界 */
+  const applyScreens = () => {
+    const primary = screens.find((s) => s.primary) ?? screens[0];
+    const sim = !!tuning.simScreens && screens.length === 1;
+    world = sim ? simulateScreens(primary) : [primary, ...screens.filter((s) => s !== primary)];
+    const w = buildWorld(world);
+    // 宠物所在的屏幕没了（被全屏程序占了、拔掉了）：从主屏上空掉下来
+    const lost = !screenAt(w, pet.pos.x, pet.pos.y) && pet.mode !== 'held';
+    pet.setWorld(w);
+    pet.setPlatforms(clipToScreens(rawPlatforms, world, MIN_PLATFORM));
+    if (lost) dropHome();
+    drawSimScreens(sim ? world : null);
+  };
+
+  let gotScreens = false;
+  host.onScreens((msg) => {
+    if (msg.remap) {
+      // 覆盖层挪了：所有东西换到新坐标
+      const { k, dx, dy } = msg.remap;
+      pet.remap(k, dx, dy);
+      minis.remap(k, dx, dy);
+      particles.clear();
+      rawPlatforms = rawPlatforms.map((p) => ({ ...p, x0: p.x0 * k + dx, x1: p.x1 * k + dx, y: p.y * k + dy }));
+      carrierLatest = null;
+      carrierSampler.clear();
+      sampler.clear();
+    }
+    if (msg.screens.length) screens = msg.screens;
+    applyScreens();
+    if (!gotScreens) {
+      // 开场：从主屏上空掉下来（覆盖层可能横跨好几块屏幕，正中间不一定是主屏）
+      gotScreens = true;
+      dropHome();
+    }
+  });
+  host.onPlatforms((list) => {
+    rawPlatforms = list;
+    pet.setPlatforms(clipToScreens(list, world, MIN_PLATFORM));
+  });
   host.onInput((zone) => pet.setInputZone(zone));
 
   const carrierSampler = new VelocitySampler(300);
@@ -149,15 +265,16 @@ async function main() {
     dndHidden = hidden;
     if (!hidden) {
       // 全屏程序退出后：从天上掉回来
+      const s = pet.screen;
       particles.clear();
-      pet.dropFrom(clamp(pet.pos.x, 100, window.innerWidth - 100), window.innerHeight * 0.05);
+      pet.dropFrom(clamp(pet.pos.x, s.left + 100, s.right - 100), s.top + (s.bottom - s.top) * 0.05);
     }
   });
   host.ready();
 
   // ---------- 小助手：报时、休息、日程、待办 ----------
 
-  const bubbles = new Bubbles(pet, () => renderer.hitRect(0), () => dndHidden);
+  const bubbles = new Bubbles(pet, () => renderer.hitRect(0), () => dndHidden, () => pet.screen);
   const companion = new Companion(bus, pet, bubbles);
   void companion.start();
   new ClaudeLink(bus, pet, bubbles, minis, () => companion.data.claude).start();
@@ -224,17 +341,31 @@ async function main() {
   });
   bus.on('debug-ping', () => (debugPing = performance.now()));
   bus.on('tuning-set', (patch: Partial<Tuning>) => {
+    const sim = tuning.simScreens;
     tuning = mergeTuning(tuning, patch);
     pet.setTuning(tuning);
+    if (tuning.simScreens !== sim) applyScreens();
   });
   bus.on('debug-cmd', (msg: { cmd: string; arg?: string }) => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    // 预设投掷相对宠物现在所在的那块屏幕
+    const scr = pet.screen;
+    const w = scr.right - scr.left;
+    const h = scr.bottom - scr.top;
     switch (msg.cmd) {
-      case 'reset':
+      case 'reset': {
+        // 托盘"把 Clawd 叫回来"：回到主屏地面中间
+        const s = home();
         particles.clear();
-        pet.placeOnFloor(w / 2);
+        pet.placeOnFloor((s.left + s.right) / 2, (s.top + s.bottom) / 2);
         break;
+      }
+      case 'next-screen': {
+        // 调试：从下一块屏幕上空掉下来
+        const s = world[(world.indexOf(scr) + 1) % world.length];
+        particles.clear();
+        pet.dropFrom((s.left + s.right) / 2, s.top + (s.bottom - s.top) * 0.1);
+        break;
+      }
       case 'pause':
         paused = !paused;
         publishState();
@@ -249,7 +380,10 @@ async function main() {
         break;
       case 'preset': {
         const make = msg.arg ? PRESETS[msg.arg] : undefined;
-        if (make) pet.launch(make(w, h));
+        if (make) {
+          const l = make(w, h);
+          pet.launch({ ...l, x: l.x + scr.left, y: l.y + scr.top });
+        }
         break;
       }
       case 'act':
@@ -489,6 +623,8 @@ async function main() {
         support: pet.support?.id ?? null,
         carrierSpeed: Math.hypot(pet.carrier.vx, pet.carrier.vy),
         platforms: pet.platforms.length,
+        screen: world.indexOf(pet.screen) + 1,
+        screens: world.length,
         input: pet.inputZone
           ? [pet.inputZone.left, pet.inputZone.top, pet.inputZone.right, pet.inputZone.bottom]
           : null,

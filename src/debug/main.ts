@@ -213,6 +213,7 @@ async function main() {
       `光标  ${t.cursor ? `${Math.round(t.cursor.x)}, ${Math.round(t.cursor.y)}` : '—'}   ${t.hover ? '在宠物上（可抓取）' : '点击穿透'}\n` +
       `窗口  ${t.platforms} 段可站顶边   脚下窗口速度 ${t.support !== null ? `${Math.round(t.carrierSpeed)} px/s` : '—'}
 ` +
+      `屏幕  第 ${t.screen} 块 / 共 ${t.screens} 块\n` +
       `输入框  ${t.input ? t.input.map(Math.round).join(', ') : '—'}${t.fleeing ? '   正在让路' : ''}`;
     $<HTMLButtonElement>('replay').disabled = !t.hasLaunch;
     if (t.paused !== paused) {
@@ -228,6 +229,7 @@ async function main() {
   $('pause').onclick = () => cmd('pause');
   $('step').onclick = () => cmd('step');
   $('reset').onclick = () => cmd('reset');
+  $('nextScreen').onclick = () => cmd('next-screen');
   $('replay').onclick = () => cmd('replay');
   $('openAssistant').onclick = () => void openAssistantPanel();
   for (const b of document.querySelectorAll<HTMLButtonElement>('[data-preset]')) {

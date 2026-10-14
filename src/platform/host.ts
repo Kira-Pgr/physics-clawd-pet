@@ -228,6 +228,20 @@ export async function pickIcsFile(): Promise<string | null> {
 
 export type HitRect = [x0: number, y0: number, x1: number, y1: number];
 
+/** 一块宠物能去的屏幕的工作区（覆盖层 CSS 像素） */
+export interface ScreenInfo extends Bounds {
+  primary: boolean;
+}
+
+/**
+ * 屏幕变了（插拔显示器、改排列/缩放、某块屏幕上开了全屏程序）。
+ * remap：覆盖层跟着挪了，之前的坐标要换算成新的：新 = 旧 × k + (dx, dy)；null = 不用换算。
+ */
+export interface ScreensMsg {
+  screens: ScreenInfo[];
+  remap: { k: number; dx: number; dy: number } | null;
+}
+
 /** 被追踪窗口的一次位置采样（覆盖层 CSS 像素） */
 export interface CarrierSample {
   id: number;
@@ -255,6 +269,8 @@ export interface OverlayHost {
   /** 开始/停止高频追踪某个窗口（宠物脚下那个） */
   setCarrier(id: number | null): void;
   onPlatforms(cb: (list: Platform[]) => void): void;
+  /** 宠物能去的屏幕；挂上监听后马上（或者 ready() 之后）会收到一次 */
+  onScreens(cb: (msg: ScreensMsg) => void): void;
   onCarrier(cb: (s: CarrierSample) => void): void;
   onDnd(cb: (hidden: boolean, reason: string) => void): void;
   /** 当前有键盘焦点的文本输入框（覆盖层 CSS 像素），没有为 null */
@@ -297,6 +313,13 @@ export async function createOverlayHost(): Promise<OverlayHost> {
     window.addEventListener('focusin', emitInput);
     window.addEventListener('focusout', () => setTimeout(emitInput, 0));
     window.addEventListener('resize', emitInput);
+    // 浏览器预览：整个页面就是一块屏幕
+    const screensCbs: ((msg: ScreensMsg) => void)[] = [];
+    const page = (): ScreensMsg => ({
+      screens: [{ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight, primary: true }],
+      remap: null,
+    });
+    window.addEventListener('resize', () => screensCbs.forEach((cb) => cb(page())));
     return {
       cursor: () => cur,
       hovering: () => !!cur && hits.some((r) => inRect(r, cur!)),
@@ -304,6 +327,10 @@ export async function createOverlayHost(): Promise<OverlayHost> {
       setDragging: () => {},
       setCarrier: () => {},
       onPlatforms: () => {},
+      onScreens: (cb) => {
+        screensCbs.push(cb);
+        cb(page());
+      },
       onCarrier: () => {},
       onDnd: () => {},
       onInput: (cb) => inputCbs.push(cb),
@@ -322,6 +349,7 @@ export async function createOverlayHost(): Promise<OverlayHost> {
   // Rust 时钟 = performance.now() - offset；取观测到的最小延迟作为偏移
   let offset = Infinity;
   const platformCbs: ((list: Platform[]) => void)[] = [];
+  const screensCbs: ((msg: ScreensMsg) => void)[] = [];
   const carrierCbs: ((s: CarrierSample) => void)[] = [];
   const dndCbs: ((hidden: boolean, reason: string) => void)[] = [];
   const inputCbs: ((zone: Bounds | null) => void)[] = [];
@@ -330,6 +358,7 @@ export async function createOverlayHost(): Promise<OverlayHost> {
     listen<Vec2>('desk-cursor', (e) => (cur = e.payload)),
     listen<boolean>('desk-hover', (e) => (hover = e.payload)),
     listen<Platform[]>('desk-platforms', (e) => platformCbs.forEach((cb) => cb(e.payload))),
+    listen<ScreensMsg>('desk-screens', (e) => screensCbs.forEach((cb) => cb(e.payload))),
     listen<CarrierSample>('desk-carrier', (e) => {
       offset = Math.min(offset, performance.now() - e.payload.t);
       carrierCbs.forEach((cb) => cb(e.payload));
@@ -351,6 +380,7 @@ export async function createOverlayHost(): Promise<OverlayHost> {
     setDragging: (on) => void invoke('desk_set_dragging', { on }),
     setCarrier: (id) => void invoke('desk_set_carrier', { id }),
     onPlatforms: (cb) => platformCbs.push(cb),
+    onScreens: (cb) => screensCbs.push(cb),
     onCarrier: (cb) => carrierCbs.push(cb),
     onDnd: (cb) => dndCbs.push(cb),
     onInput: (cb) => inputCbs.push(cb),

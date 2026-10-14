@@ -36,19 +36,20 @@ fn run(app: AppHandle, shared: Shared, overlay_id: isize) {
             last_permission = permission;
             crate::sync_input_permission(&app);
         }
-        let (hidden, resync) = {
+        let (hidden, resync, overlay) = {
             let mut s = shared.lock().unwrap();
-            (s.manual_hidden, std::mem::take(&mut s.input_resync))
+            (s.manual_hidden, std::mem::take(&mut s.input_resync), s.overlay)
         };
         if resync {
             last = None;
         }
+        // 换算成覆盖层 CSS 像素（覆盖层铺在哪儿由观察线程决定）
         let zone = if hidden {
             None
         } else {
-            platform::primary_work_area().and_then(|area| {
-                let scale = platform::window_scale(overlay_id);
-                probe.focused_input(overlay_id, area).map(|r| ZoneMsg {
+            overlay.and_then(|o| {
+                let (area, scale) = (o.area, o.scale);
+                probe.focused_input(overlay_id, o.screen).map(|r| ZoneMsg {
                     left: (r.left - area.left) as f64 / scale,
                     top: (r.top - area.top) as f64 / scale,
                     right: (r.right - area.left) as f64 / scale,

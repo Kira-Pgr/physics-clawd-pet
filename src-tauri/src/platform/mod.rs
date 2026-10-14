@@ -18,16 +18,17 @@ compile_error!("只支持 Windows 和 macOS");
 pub use imp::{
     // 进程、界面语言、窗口
     ancestor_pids,
+    place_overlay,
     prepare_overlay,
     single_instance,
     tray_template_icon,
     ui_language,
     window_id,
-    // 桌面状态（光标、窗口、工作区、全屏）
+    // 桌面状态（光标、窗口、各块屏幕、全屏）
     cursor_pos,
     frame_bounds,
-    fullscreen_on_primary,
-    primary_work_area,
+    fullscreen_monitors,
+    screens,
     visible_windows,
     window_for_pids,
     window_scale,

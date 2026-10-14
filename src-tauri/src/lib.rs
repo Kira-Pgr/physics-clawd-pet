@@ -5,10 +5,7 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::BackgroundThrottlingPolicy;
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 mod assist;
 mod claude;
@@ -40,18 +37,28 @@ pub fn cli(args: &[String]) -> Option<i32> {
 
 const ASSISTANT: &str = "assistant";
 
-/// 覆盖层：铺满主屏的工作区（不含任务栏）。
-/// 故意不等于整块屏幕，避免被系统当成全屏程序（压住任务栏、吞掉通知）。
+/// 覆盖层：铺满所有屏幕的工作区（不含任务栏）的外接矩形，宠物可以在几块屏幕之间走来走去。
+/// 故意不盖任务栏，避免被系统当成全屏程序（压住任务栏、吞掉通知）。
+/// 之后屏幕变了、某块屏幕上开了全屏程序，由观察线程重新摆。
 fn create_overlay(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    let monitor = match app.primary_monitor()? {
-        Some(m) => m,
-        None => app
-            .available_monitors()?
-            .into_iter()
-            .next()
-            .expect("no monitor found"),
+    let layout = match desktop::layout(&platform::screens(), &[]) {
+        Some(l) => l,
+        // 系统没报出屏幕（不该发生）：退回 Tauri 给的主屏
+        None => {
+            let monitor = match app.primary_monitor()? {
+                Some(m) => m,
+                None => app.available_monitors()?.into_iter().next().expect("no monitor found"),
+            };
+            let (pos, size) = (monitor.work_area().position, monitor.work_area().size);
+            let work = desktop::Rect {
+                left: pos.x,
+                top: pos.y,
+                right: pos.x + size.width as i32,
+                bottom: pos.y + size.height as i32,
+            };
+            desktop::Layout { rect: work, screens: vec![desktop::Screen { monitor: work, work, primary: true }] }
+        }
     };
-    let area = *monitor.work_area();
 
     let win = WebviewWindowBuilder::new(app, OVERLAY, WebviewUrl::App("index.html".into()))
         .title("Clawd")
@@ -68,21 +75,15 @@ fn create_overlay(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         // macOS：程序不在前台时，第一下点击也直接交给宠物（不然第一下只是把程序切到前台）
         .accept_first_mouse(true)
         .build()?;
-    win.set_position(PhysicalPosition::new(area.position.x, area.position.y))?;
-    win.set_size(PhysicalSize::new(area.size.width, area.size.height))?;
-    win.set_ignore_cursor_events(true)?;
+    // 先做平台设置（Windows：拦住跨屏缩放变化时的自动改大小），再摆位置
     platform::prepare_overlay(&win)?;
+    platform::place_overlay(&win, layout.rect)?;
+    win.set_ignore_cursor_events(true)?;
     win.show()?;
 
-    let rect = desktop::Rect {
-        left: area.position.x,
-        top: area.position.y,
-        right: area.position.x + area.size.width as i32,
-        bottom: area.position.y + area.size.height as i32,
-    };
     let id = platform::window_id(&win)?;
     let shared = app.state::<Shared>().inner().clone();
-    watcher::spawn(app.clone(), shared.clone(), id, rect);
+    watcher::spawn(app.clone(), shared.clone(), id, layout);
     input::spawn(app.clone(), shared, id);
     Ok(win)
 }

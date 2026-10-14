@@ -1,4 +1,4 @@
-//! 桌面状态查询（Win32）：光标、可见窗口、工作区、全屏检测。
+//! 桌面状态查询（Win32）：光标、可见窗口、各块屏幕的工作区、全屏检测。
 //! 全部只读，不移动、不修改任何其他程序的窗口。
 
 use std::mem::size_of;
@@ -9,7 +9,7 @@ use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::{
@@ -17,12 +17,11 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
-    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SystemParametersInfoW,
-    GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WS_CAPTION,
-    WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, GWL_EXSTYLE, GWL_STYLE,
+    GW_OWNER, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
-use crate::desktop::{Rect, WinInfo};
+use crate::desktop::{Rect, Screen, WinInfo};
 
 impl From<RECT> for Rect {
     fn from(r: RECT) -> Self {
@@ -40,19 +39,27 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     Some((p.x, p.y))
 }
 
-/// 主屏工作区（不含任务栏），物理像素
-pub fn primary_work_area() -> Option<Rect> {
-    let mut r = RECT::default();
-    unsafe {
-        SystemParametersInfoW(
-            SPI_GETWORKAREA,
-            0,
-            Some(&mut r as *mut RECT as *mut _),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
+const MONITORINFOF_PRIMARY: u32 = 1;
+
+unsafe extern "system" fn collect_monitor(m: HMONITOR, _: HDC, _: *mut RECT, lparam: LPARAM) -> BOOL {
+    let out = &mut *(lparam.0 as *mut Vec<Screen>);
+    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if GetMonitorInfoW(m, &mut mi).as_bool() {
+        out.push(Screen {
+            monitor: mi.rcMonitor.into(),
+            work: mi.rcWork.into(),
+            primary: mi.dwFlags & MONITORINFOF_PRIMARY != 0,
+        });
     }
-    .ok()?;
-    Some(r.into())
+    BOOL(1)
+}
+
+/// 所有显示器（物理像素），主屏排第一个。复制模式（两块屏显示同样内容）系统只报一块。
+pub fn screens() -> Vec<Screen> {
+    let mut out: Vec<Screen> = Vec::new();
+    let _ = unsafe { EnumDisplayMonitors(None, None, Some(collect_monitor), LPARAM(&mut out as *mut Vec<Screen> as isize)) };
+    out.sort_by_key(|s| !s.primary);
+    out
 }
 
 pub fn window_scale(id: isize) -> f64 {
@@ -185,42 +192,75 @@ pub fn window_for_pids(pids: &[u32]) -> Option<isize> {
     pids.iter().find_map(|p| by_pid.get(p).copied())
 }
 
-/// 主屏上是否有全屏程序在前台（游戏、全屏视频、演示模式）
-pub fn fullscreen_on_primary(skip: isize) -> bool {
+fn monitor_rect(h: HWND) -> Option<Rect> {
+    let mon = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
+    let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+    unsafe { GetMonitorInfoW(mon, &mut mi) }.as_bool().then(|| mi.rcMonitor.into())
+}
+
+/// 哪几块屏幕上有全屏程序（游戏、全屏视频、演示模式），返回那几块屏幕的整屏矩形。
+/// 不只看前台窗口：在副屏全屏放着视频、回主屏干活时，副屏的视频也得算。
+/// 每块屏幕看盖在最上面的那个大窗口：盖满整块屏幕（不只是工作区）就是全屏。
+pub fn fullscreen_monitors(skip: isize) -> Vec<Rect> {
+    let mut out: Vec<Rect> = Vec::new();
     unsafe {
+        // 独占全屏的游戏、演示模式：前台窗口所在的那块
         if let Ok(state) = SHQueryUserNotificationState() {
             if state == QUNS_RUNNING_D3D_FULL_SCREEN || state == QUNS_PRESENTATION_MODE {
-                return true;
+                if let Some(m) = monitor_rect(GetForegroundWindow()) {
+                    out.push(m);
+                }
             }
         }
-        let fg = GetForegroundWindow();
-        if fg.is_invalid() || fg.0 as isize == skip {
-            return false;
+    }
+    let mut undecided: Vec<Rect> = screens().iter().map(|s| s.monitor).filter(|m| !out.contains(m)).collect();
+    let mut handles: Vec<isize> = Vec::with_capacity(256);
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(&mut handles as *mut Vec<isize> as isize)) };
+    for id in handles {
+        if undecided.is_empty() {
+            break;
         }
-        let class = class_name(fg);
-        if SHELL_CLASSES.contains(&class.as_str()) {
-            return false;
+        if id == skip {
+            continue;
         }
-        let mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
-        if !GetMonitorInfoW(mon, &mut mi).as_bool() {
-            return false;
+        let h = hwnd(id);
+        unsafe {
+            if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+                continue;
+            }
         }
-        const MONITORINFOF_PRIMARY: u32 = 1;
-        if mi.dwFlags & MONITORINFOF_PRIMARY == 0 {
-            return false;
+        if is_cloaked(h) {
+            continue;
+        }
+        let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) } as u32;
+        if ex & WS_EX_TRANSPARENT.0 != 0 || (ex & WS_EX_TOOLWINDOW.0 != 0 && ex & WS_EX_APPWINDOW.0 == 0) {
+            continue;
+        }
+        if SHELL_CLASSES.contains(&class_name(h).as_str()) {
+            continue;
         }
         let mut r = RECT::default();
-        if GetWindowRect(fg, &mut r).is_err() {
-            return false;
+        if unsafe { GetWindowRect(h, &mut r) }.is_err() {
+            continue;
         }
-        let m = mi.rcMonitor;
-        let covers = r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
-        if !covers {
-            return false;
-        }
+        let r: Rect = r.into();
         // 任务栏自动隐藏时，普通最大化窗口也会铺满屏幕：有标题栏的最大化窗口不算全屏
-        let style = GetWindowLongPtrW(fg, GWL_STYLE) as u32;
-        !(IsZoomed(fg).as_bool() && style & WS_CAPTION.0 == WS_CAPTION.0)
+        let zoomed = unsafe {
+            IsZoomed(h).as_bool() && GetWindowLongPtrW(h, GWL_STYLE) as u32 & WS_CAPTION.0 == WS_CAPTION.0
+        };
+        undecided.retain(|m| {
+            let w = (r.right.min(m.right) - r.left.max(m.left)).max(0) as i64;
+            let ht = (r.bottom.min(m.bottom) - r.top.max(m.top)).max(0) as i64;
+            // 小窗口（画中画、便签、浮动工具条）不算数，接着往下看
+            if w * ht * 2 < m.width() as i64 * m.height() as i64 {
+                return true;
+            }
+            let covers = r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
+            if covers && !zoomed {
+                out.push(*m);
+            }
+            false
+        });
     }
+    out
 }

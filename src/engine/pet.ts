@@ -9,12 +9,22 @@ import {
   wrapAngle,
 } from './math';
 import { type Tuning, cellSize } from './params';
+import {
+  type Bounds,
+  type Seg,
+  type Side,
+  type World,
+  buildWorld,
+  ceilingAbove,
+  floorBelow,
+  keepInside,
+  nearestScreen,
+  nearestSeg,
+  screenAt,
+  segDistance,
+} from './world';
 
-/**
- * 宠物贴着的面：屏幕边框的四条边。站在其他窗口顶上时也是 'floor'，
- * 只是 support 指向那个窗口的顶边（见 Platform）。
- */
-export type Side = 'floor' | 'ceiling' | 'left' | 'right';
+export type { Bounds, Side } from './world';
 
 /** 一段可以站的窗口顶边（覆盖层 CSS 像素）。单向平台：只能从上面落上去。 */
 export interface Platform {
@@ -95,13 +105,6 @@ export const SWEEP_STROKE = 0.55;
 const UNTIL_DONE = 1e6;
 
 export type ImpactTier = 'soft' | 'bounce' | 'roll' | 'hero' | 'splat' | 'wall' | 'cling';
-
-export interface Bounds {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-}
 
 export type PetEvent =
   | { type: 'impact'; tier: ImpactTier; x: number; y: number; nx: number; ny: number; speed: number }
@@ -252,6 +255,10 @@ export class Pet {
   lastLaunch: LaunchState | null = null;
   events: PetEvent[] = [];
 
+  /** 屏幕拼成的世界（一块或几块屏幕） */
+  world: World;
+  /** 正贴着哪段屏幕边框（站在窗口顶上、飞着、被拎着时为 null） */
+  seg: Seg | null = null;
   /** 所有可站的窗口顶边 */
   platforms: Platform[] = [];
   /** 正站在哪段窗口顶边上（null = 屏幕边框） */
@@ -304,9 +311,12 @@ export class Pet {
   constructor(
     public tuning: Tuning,
     public grid: [number, number],
-    public bounds: Bounds,
+    /** 一块屏幕，或者几块屏幕的工作区 */
+    screens: Bounds | Bounds[],
     private rng: () => number = Math.random,
-  ) {}
+  ) {
+    this.world = buildWorld(Array.isArray(screens) ? screens : [screens]);
+  }
 
   // ---------- 尺寸 ----------
 
@@ -333,11 +343,55 @@ export class Pet {
     return this.hold ? this.hold.vel : null;
   }
 
+  get screens(): readonly Bounds[] {
+    return this.world.screens;
+  }
+
+  /** 宠物现在在哪块屏幕上（中心不在任何屏幕里时取最近的那块） */
+  get screen(): Bounds {
+    const { x, y } = this.pos;
+    return screenAt(this.world, x, y) ?? nearestScreen(this.world, x, y);
+  }
+
   // ---------- 外部控制 ----------
 
+  /** 只有一块屏幕 */
   setBounds(b: Bounds) {
-    this.bounds = b;
+    this.setScreens([b]);
+  }
+
+  /** 屏幕（工作区）变了：插拔显示器、改排列、某块屏幕被全屏程序占了 */
+  setScreens(list: Bounds[]) {
+    if (list.length) this.setWorld(buildWorld(list));
+  }
+
+  /** 迷你 Clawd 和主宠物共用同一个世界 */
+  setWorld(w: World) {
+    if (w === this.world || !w.screens.length) return;
+    this.world = w;
+    this.seg = null;
     this.resnap();
+  }
+
+  /**
+   * 覆盖层挪了位置或者换了缩放，同一个屏幕上的点 CSS 坐标变了：old → old·k + (dx, dy)。
+   * 之后马上会用新坐标的屏幕列表调 setScreens。
+   */
+  remap(k: number, dx: number, dy: number) {
+    const mx = (x: number) => x * k + dx;
+    const my = (y: number) => y * k + dy;
+    const mp = (p: Platform): Platform => ({ ...p, x0: mx(p.x0), x1: mx(p.x1), y: my(p.y) });
+    this.pos = { x: mx(this.pos.x), y: my(this.pos.y) };
+    this.vel = { x: this.vel.x * k, y: this.vel.y * k };
+    this.carryVel = { x: this.carryVel.x * k, y: this.carryVel.y * k };
+    if (this.hold) this.hold.pivot = { x: mx(this.hold.pivot.x), y: my(this.hold.pivot.y) };
+    this.platforms = this.platforms.map(mp);
+    if (this.support) this.support = mp(this.support);
+    const z = this.inputZone;
+    if (z) this.inputZone = { left: mx(z.left), top: my(z.top), right: mx(z.right), bottom: my(z.bottom) };
+    this.resetCarrier();
+    this.rub.x = NaN;
+    this.seg = null;
   }
 
   setTuning(t: Tuning) {
@@ -548,8 +602,9 @@ export class Pet {
     if (target) {
       goal = clamp(this.pos.x, target.x0 + hw, target.x1 - hw);
     } else {
-      const center = (this.bounds.left + this.bounds.right) / 2;
-      const [lo, hi] = this.sRange('floor');
+      const scr = this.screen;
+      const center = (scr.left + scr.right) / 2;
+      const [lo, hi] = this.sRange();
       goal = this.support ? center : clamp(center, lo, hi);
     }
     if (Math.abs(this.pos.x - goal) <= hw * 0.5 || timedOut) {
@@ -646,24 +701,53 @@ export class Pet {
     this.events.push({ type: 'dropped' });
   }
 
-  /** 尺寸或边界变化后，把宠物放回合法位置 */
+  /** 尺寸或屏幕变化后，把宠物放回合法位置 */
   private resnap() {
     if (this.mode === 'held') return;
+    const onScreenEdge = this.grounded && !(this.side === 'floor' && this.support);
+    if (onScreenEdge && !(this.seg && this.world.segs.includes(this.seg))) {
+      this.seg = this.findSeg(this.side);
+      if (!this.seg) {
+        // 脚下那段边框没了（显示器拔掉了、那块屏幕被全屏程序占了）：掉下去
+        this.setMode('air');
+        this.vel = { x: 0, y: 0 };
+      }
+    }
     if (this.grounded && this.mode !== 'roll') {
-      this.attach(this.side, undefined, { smooth: false });
+      this.attach(this.side, this.seg, undefined, { smooth: false });
     } else {
-      const { left, top, right, bottom } = this.bounds;
-      this.pos.x = clamp(this.pos.x, left + this.halfW, Math.max(left + this.halfW, right - this.halfW));
-      this.pos.y = clamp(this.pos.y, top + this.halfH, Math.max(top + this.halfH, bottom - this.halfH));
+      this.pos = keepInside(this.world, this.pos, this.halfW, this.halfH);
     }
   }
 
-  placeOnFloor(x: number) {
+  /** 贴着 side 这种面、离宠物最近的那段边框；离得太远就算没有 */
+  private findSeg(side: Side): Seg | null {
+    const n = NORMAL[side];
+    // 宠物贴着面的那一点
+    const px = this.pos.x - n.x * this.halfH;
+    const py = this.pos.y - n.y * this.halfH;
+    let best: Seg | null = null;
+    let bestD = Infinity;
+    for (const s of this.world.segs) {
+      if (s.side !== side) continue;
+      const d = segDistance(s, px, py);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return bestD <= Math.max(this.halfW, this.halfH) * 2 ? best : null;
+  }
+
+  /** 放到 x 处的地面上：(x, y) 正下方那段地面，不给 y 就是 x 处最上面那段 */
+  placeOnFloor(x: number, y = -Infinity) {
     this.hold = null;
     this.support = null;
+    const seg = floorBelow(this.world, x, y) ?? this.world.segs.find((s) => s.side === 'floor') ?? null;
+    if (!seg) return;
     this.side = 'floor';
-    this.pos = { x, y: this.bounds.bottom - this.halfH };
-    this.attach('floor', x, { smooth: false });
+    this.pos = { x, y: seg.c - this.halfH };
+    this.attach('floor', seg, x, { smooth: false });
     this.setMode('idle', 1);
   }
 
@@ -873,7 +957,10 @@ export class Pet {
     this.mode = m;
     this.modeTime = 0;
     this.modeDuration = duration;
-    if (m === 'air' || m === 'held') this.support = null;
+    if (m === 'air' || m === 'held') {
+      this.support = null;
+      this.seg = null;
+    }
     if (m !== 'walk') {
       this.fleeing = false;
       this.seeking = false;
@@ -968,6 +1055,7 @@ export class Pet {
       this.vel.x *= T.maxSpeed / sp;
       this.vel.y *= T.maxSpeed / sp;
     }
+    const prevX = this.pos.x;
     const prevY = this.pos.y;
     this.pos.x += this.vel.x * dt;
     this.pos.y += this.vel.y * dt;
@@ -984,13 +1072,17 @@ export class Pet {
       this.angVel *= 1 - a;
     }
 
-    this.collideAir(prevY);
+    this.collideAir(prevX, prevY);
+    // 斜着穿过两块屏幕的拐角时可能落进屏幕之间的空当：拉回最近的那块屏幕
+    if (this.mode === 'air' && !screenAt(this.world, this.pos.x, this.pos.y)) {
+      this.pos = keepInside(this.world, this.pos, 0, 0);
+    }
   }
 
   /** 正下方最近的落脚处（窗口顶边或屏幕底） */
   private groundBelow(): number {
     const feet = this.pos.y + this.halfH;
-    let y = this.bounds.bottom;
+    let y = floorBelow(this.world, this.pos.x, this.pos.y)?.c ?? Infinity;
     for (const p of this.platforms) {
       if (p.y >= feet && p.y < y && this.pos.x >= p.x0 && this.pos.x <= p.x1) y = p.y;
     }
@@ -999,11 +1091,13 @@ export class Pet {
 
   /** 平台头顶要有足够空间站下宠物 */
   private hasHeadroom(p: Platform): boolean {
-    return p.y - this.bounds.top >= this.halfH * 2;
+    const ceiling = ceilingAbove(this.world, clamp(this.pos.x, p.x0, p.x1), p.y);
+    return !ceiling || p.y - ceiling.c >= this.halfH * 2;
   }
 
-  private collideAir(prevY: number) {
-    const { left, top, right, bottom } = this.bounds;
+  /** prevX/prevY：这一步之前的位置。只和这一步之前还在里侧的边框比，一步飞太远也穿不过去 */
+  private collideAir(prevX: number, prevY: number) {
+    const w = this.world;
     // 旋转后的包围盒半宽/半高
     const c = Math.abs(Math.cos(this.rot));
     const s = Math.abs(Math.sin(this.rot));
@@ -1027,36 +1121,41 @@ export class Pet {
       }
     }
 
-    if (this.pos.y + ey >= bottom && this.vel.y > 0) {
-      this.pos.y = bottom - ey;
-      this.hitFloor();
+    // 屏幕边框：两块屏幕挨着的地方没有边框，直接穿过去
+    const floor = nearestSeg(w, 'floor', this.pos.x, this.pos.y, prevY);
+    if (floor && this.pos.y + ey >= floor.c && this.vel.y > 0) {
+      this.pos.y = floor.c - ey;
+      this.hitFloor(null, floor);
       return;
     }
-    if (this.pos.y - ey <= top && this.vel.y < 0) {
-      this.pos.y = top + ey;
-      this.hitCeiling();
+    const ceiling = nearestSeg(w, 'ceiling', this.pos.x, this.pos.y, prevY);
+    if (ceiling && this.pos.y - ey <= ceiling.c && this.vel.y < 0) {
+      this.pos.y = ceiling.c + ey;
+      this.hitCeiling(ceiling);
       if (this.mode !== 'air') return;
     }
-    if (this.pos.x - ex <= left && this.vel.x < 0) {
-      this.pos.x = left + ex;
-      this.hitWall('left');
-    } else if (this.pos.x + ex >= right && this.vel.x > 0) {
-      this.pos.x = right - ex;
-      this.hitWall('right');
+    const left = nearestSeg(w, 'left', this.pos.x, this.pos.y, prevX);
+    const right = nearestSeg(w, 'right', this.pos.x, this.pos.y, prevX);
+    if (left && this.pos.x - ex <= left.c && this.vel.x < 0) {
+      this.pos.x = left.c + ex;
+      this.hitWall('left', left);
+    } else if (right && this.pos.x + ex >= right.c && this.vel.x > 0) {
+      this.pos.x = right.c - ex;
+      this.hitWall('right', right);
     }
   }
 
-  /** 落到屏幕底部（p = null）或某个窗口顶边上 */
-  private hitFloor(p: Platform | null = null) {
+  /** 落到屏幕底边（seg）或某个窗口顶边（p）上 */
+  private hitFloor(p: Platform | null, seg: Seg | null = null) {
     const T = this.tuning;
     const impact = this.vel.y;
     const vx = this.vel.x;
-    const floorY = p ? p.y : this.bounds.bottom;
+    const floorY = p ? p.y : seg ? seg.c : this.floorY;
     const contact = { x: this.pos.x, y: floorY };
     const stand = (opts?: { keepRot?: boolean }) => {
       this.side = 'floor';
       this.support = p ? { ...p } : null;
-      this.attach('floor', undefined, opts);
+      this.attach('floor', p ? null : seg, undefined, opts);
       const c = this.carrier;
       this.carryVel = p && c.id === p.id ? { x: c.vx, y: c.vy } : { x: 0, y: 0 };
     };
@@ -1110,12 +1209,12 @@ export class Pet {
     }
   }
 
-  private hitCeiling() {
+  private hitCeiling(seg: Seg) {
     const T = this.tuning;
     const speed = -this.vel.y;
-    const contact = { x: this.pos.x, y: this.bounds.top };
+    const contact = { x: this.pos.x, y: seg.c };
     if (speed >= T.ceilingClingSpeed) {
-      this.cling('ceiling', speed, contact);
+      this.cling('ceiling', seg, speed, contact);
       return;
     }
     this.vel.y = speed * T.wallRestitution;
@@ -1123,12 +1222,12 @@ export class Pet {
     this.impact('wall', contact, NORMAL.ceiling, speed);
   }
 
-  private hitWall(side: 'left' | 'right') {
+  private hitWall(side: 'left' | 'right', seg: Seg) {
     const T = this.tuning;
     const speed = Math.abs(this.vel.x);
-    const contact = { x: side === 'left' ? this.bounds.left : this.bounds.right, y: this.pos.y };
+    const contact = { x: seg.c, y: this.pos.y };
     if (speed >= T.wallClingSpeed) {
-      this.cling(side, speed, contact);
+      this.cling(side, seg, speed, contact);
       return;
     }
     this.vel.x = -this.vel.x * T.wallRestitution;
@@ -1137,9 +1236,9 @@ export class Pet {
     this.impact('wall', contact, NORMAL[side], speed);
   }
 
-  private cling(side: Side, speed: number, contact: Vec2) {
+  private cling(side: Side, seg: Seg, speed: number, contact: Vec2) {
     const T = this.tuning;
-    this.attach(side);
+    this.attach(side, seg);
     this.setMode('cling', T.clingHold);
     this.hitstop = T.hitstopCling;
     this.kickSquash(speed, side);
@@ -1161,9 +1260,12 @@ export class Pet {
     this.pos.x += this.vel.x * dt;
     this.rot += (this.vel.x / this.rollRadius) * dt;
 
-    // 滚出窗口边缘：带着速度掉下去，继续转
+    // 滚出窗口边缘、滚出屏幕的边沿（下面是另一块屏幕）：带着速度掉下去，继续转
     const sup = this.support;
-    if (sup && (this.pos.x < sup.x0 || this.pos.x > sup.x1)) {
+    const seg = sup ? null : this.seg;
+    const offLedge =
+      seg !== null && ((this.pos.x < seg.a && !!seg.lo?.convex) || (this.pos.x > seg.b && !!seg.hi?.convex));
+    if ((sup && (this.pos.x < sup.x0 || this.pos.x > sup.x1)) || offLedge) {
       const vx = this.vel.x;
       this.setMode('air');
       this.vel = { x: vx, y: 0 };
@@ -1172,7 +1274,16 @@ export class Pet {
     }
 
     const r = this.rollRadius;
-    const { left, right } = this.bounds;
+    // 两头的墙：在屏幕边框上滚就是这段地面两头的墙角，在窗口上滚就找左右最近的墙
+    let left: number;
+    let right: number;
+    if (seg) {
+      left = seg.lo?.convex ? -Infinity : seg.a;
+      right = seg.hi?.convex ? Infinity : seg.b;
+    } else {
+      left = nearestSeg(this.world, 'left', this.pos.x, this.pos.y)?.c ?? -Infinity;
+      right = nearestSeg(this.world, 'right', this.pos.x, this.pos.y)?.c ?? Infinity;
+    }
     const bottom = this.floorY;
     if (this.pos.x - r <= left && this.vel.x < 0) {
       this.pos.x = left + r;
@@ -1231,7 +1342,8 @@ export class Pet {
     }
     if (this.side !== 'floor' && this.surfaceTime >= this.surfaceStay) {
       // 正下方就是输入框：先别跳，在墙上多待一会儿
-      if (this.fleeing || this.blocksInput(this.pos.x, this.bounds.bottom - this.halfH)) {
+      const below = floorBelow(this.world, this.pos.x, this.pos.y)?.c ?? this.screen.bottom;
+      if (this.fleeing || this.blocksInput(this.pos.x, below - this.halfH)) {
         this.surfaceStay = this.surfaceTime + 2;
       } else {
         this.leaveSurface();
@@ -1242,7 +1354,7 @@ export class Pet {
     if (this.mode === 'walk') {
       const hurry = this.fleeing || this.seeking;
       const speed = (this.side === 'floor' ? T.walkSpeed : T.climbSpeed) * (hurry ? T.fleeSpeedMul : 1);
-      const [lo, hi] = this.sRange(this.side);
+      const [lo, hi] = this.sRange();
       const s = this.sOf(this.side) + this.dir * speed * dt;
       const next = this.surfacePos(this.side, clamp(s, lo, hi));
       const sup = this.support;
@@ -1266,6 +1378,8 @@ export class Pet {
       } else if (s <= lo || s >= hi) {
         if (sup) this.dir = (s <= lo ? 1 : -1) as 1 | -1;
         else this.atCorner(s <= lo ? 'lo' : 'hi');
+        // 从边沿跳下去了（atCorner 会改 mode，TS 看不出来）
+        if ((this.mode as Mode) === 'air') return;
       } else {
         this.pos = this.surfacePos(this.side, s);
       }
@@ -1325,38 +1439,59 @@ export class Pet {
     this.events.push({ type: 'leap' });
   }
 
+  /**
+   * 沿屏幕边框走到了这段的一头。
+   * - 墙角（凹角）：爬上墙 / 爬上天花板 / 从墙上下到地面，或者掉头；
+   * - 边沿（凸角，多块屏幕拼出来的台阶）：地面到头了就跳下去或者掉头，矮台阶直接走下去；
+   *   在墙上、天花板上就翻过去，贴到下一段上。
+   */
   private atCorner(end: 'lo' | 'hi') {
     const T = this.tuning;
-    const { left, top, right, bottom } = this.bounds;
-    const hw = this.halfW;
-    type Turn = [Side, number, 1 | -1, number];
-    const table: Record<Side, Record<'lo' | 'hi', Turn>> = {
-      floor: {
-        lo: ['left', bottom - hw, -1, T.climbChance],
-        hi: ['right', bottom - hw, -1, T.climbChance],
-      },
-      left: {
-        lo: ['ceiling', left + hw, 1, T.ceilingChance],
-        hi: ['floor', left + hw, 1, 1],
-      },
-      right: {
-        lo: ['ceiling', right - hw, -1, T.ceilingChance],
-        hi: ['floor', right - hw, -1, 1],
-      },
-      ceiling: {
-        lo: ['left', top + hw, 1, 1],
-        hi: ['right', top + hw, 1, 1],
-      },
-    };
-    const [side, s, dir, chance] = table[this.side][end];
-    // 让路让到了墙角：爬上去
-    if (!this.fleeing && this.rng() >= chance) {
+    const seg = this.seg;
+    const link = end === 'lo' ? seg?.lo : seg?.hi;
+    const turn = () => {
       this.dir = (end === 'lo' ? 1 : -1) as 1 | -1;
-      return;
-    }
+    };
+    if (!seg || !link) return turn();
+    const next = link.seg;
+    const hw = this.halfW;
     const fromFloor = this.side === 'floor';
-    this.attach(side, s);
-    this.dir = dir;
+
+    if (fromFloor && link.convex) {
+      // 下面那截墙有多高 = 要往下跳多高；不到一个身高的台阶直接走下去
+      const drop = next.b - next.a;
+      if (drop <= this.halfH * 2) {
+        this.setMode('air');
+        this.vel = { x: this.dir * T.walkSpeed, y: 0 };
+        return;
+      }
+      if (this.fleeing || this.seeking || this.rng() < T.stepOffChance) {
+        this.setMode('air');
+        this.vel = { x: this.dir * T.walkSpeed * 2, y: -260 };
+        this.events.push({ type: 'leap' });
+        return;
+      }
+      return turn();
+    }
+
+    if (fromFloor && next.b - next.a <= this.halfH * 2) {
+      // 矮台阶（比如只有一块屏幕有任务栏，两边地面差一截）：不用爬墙，直接迈上去
+      const top = Math.abs(next.a - seg.c) > Math.abs(next.b - seg.c) ? next.lo : next.hi;
+      if (top?.convex && top.seg.side === 'floor') {
+        this.attach('floor', top.seg, next.c);
+        this.squashAngle = -Math.PI / 2;
+        this.squash = Math.min(this.squash, -0.12);
+        return;
+      }
+    }
+
+    const chance = next.side === 'ceiling' ? T.ceilingChance : fromFloor ? T.climbChance : 1;
+    // 让路让到了墙角：爬上去
+    if (!this.fleeing && this.rng() >= chance) return turn();
+    // 拐角在下一段的哪头：从那头往里走，身子整个贴上去
+    const atLo = Math.abs(seg.c - next.a) <= Math.abs(seg.c - next.b);
+    this.attach(next.side, next, atLo ? next.a + hw : next.b - hw);
+    this.dir = atLo ? 1 : -1;
     if (fromFloor) {
       this.surfaceTime = 0;
       this.surfaceStay = rand(T.surfaceStayMin, Math.max(T.surfaceStayMin, T.surfaceStayMax), this.rng);
@@ -1495,7 +1630,7 @@ export class Pet {
 
   /** 电脑放哪边：空地多的一边，并且别摆到输入框上 */
   private laptopSide(): 1 | -1 {
-    const [lo, hi] = this.sRange('floor');
+    const [lo, hi] = this.sRange();
     const reach = this.halfW * 1.4;
     const ok = (d: 1 | -1) => {
       const x = this.pos.x + d * reach;
@@ -1657,7 +1792,7 @@ export class Pet {
     const m = this.tuning.inputMargin;
     const horizontal = this.side === 'floor' || this.side === 'ceiling';
     const s = this.sOf(this.side);
-    const [lo, hi] = this.sRange(this.side);
+    const [lo, hi] = this.sRange();
     const half = this.halfW + 2;
     const zlo = (horizontal ? z.left : z.top) - m - half;
     const zhi = (horizontal ? z.right : z.bottom) + m + half;
@@ -1683,18 +1818,33 @@ export class Pet {
 
   /** 当前脚下的地面高度：窗口顶边或屏幕底 */
   get floorY(): number {
-    return this.support ? this.support.y : this.bounds.bottom;
+    if (this.support) return this.support.y;
+    if (this.seg?.side === 'floor') return this.seg.c;
+    return floorBelow(this.world, this.pos.x, this.pos.y)?.c ?? this.screen.bottom;
   }
 
-  private sRange(side: Side): [number, number] {
-    const { left, top, right, bottom } = this.bounds;
+  /**
+   * 沿当前这个面能走的范围（身体中心）。墙角那头要留出半个身子；
+   * 边沿那头（窗口边缘、屏幕拼出来的台阶）身体中心可以走到边上，一半身子悬空。
+   */
+  private sRange(): [number, number] {
     const hw = this.halfW;
-    let [lo, hi] = side === 'floor' || side === 'ceiling' ? [left + hw, right - hw] : [top + hw, bottom - hw];
-    // 站在窗口顶上时，身体中心可以走到边缘（一半身子悬空）
-    if (side === 'floor' && this.support) {
-      lo = Math.max(lo, this.support.x0);
-      hi = Math.min(hi, this.support.x1);
+    if (this.side === 'floor' && this.support) {
+      const y = this.support.y - this.halfH;
+      const left = nearestSeg(this.world, 'left', this.pos.x, y);
+      const right = nearestSeg(this.world, 'right', this.pos.x, y);
+      const lo = Math.max(this.support.x0, left ? left.c + hw : -Infinity);
+      const hi = Math.min(this.support.x1, right ? right.c - hw : Infinity);
+      return [lo, Math.max(lo, hi)];
     }
+    if (this.seg?.side !== this.side) this.seg = this.findSeg(this.side);
+    const seg = this.seg;
+    if (!seg) {
+      const s = this.sOf(this.side);
+      return [s, s];
+    }
+    const lo = seg.a + (seg.lo?.convex ? 0 : hw);
+    const hi = seg.b - (seg.hi?.convex ? 0 : hw);
     return [lo, Math.max(lo, hi)];
   }
 
@@ -1703,27 +1853,29 @@ export class Pet {
   }
 
   private surfacePos(side: Side, s: number): Vec2 {
-    const { left, top, right } = this.bounds;
     const hh = this.halfH;
+    const scr = this.screen;
     switch (side) {
       case 'floor':
         return { x: s, y: this.floorY - hh };
       case 'ceiling':
-        return { x: s, y: top + hh };
+        return { x: s, y: (this.seg?.c ?? scr.top) + hh };
       case 'left':
-        return { x: left + hh, y: s };
+        return { x: (this.seg?.c ?? scr.left) + hh, y: s };
       case 'right':
-        return { x: right - hh, y: s };
+        return { x: (this.seg?.c ?? scr.right) - hh, y: s };
     }
   }
 
-  private attach(side: Side, s?: number, opts: { smooth?: boolean; keepRot?: boolean } = {}) {
+  /** 贴到 side 这种面上：seg 是那段屏幕边框（站在窗口顶上时为 null，用 support） */
+  private attach(side: Side, seg: Seg | null, s?: number, opts: { smooth?: boolean; keepRot?: boolean } = {}) {
     const { smooth = true, keepRot = false } = opts;
     const oldPos = { ...this.pos };
     const oldRot = this.rot;
     this.side = side;
+    this.seg = seg;
     if (side !== 'floor') this.support = null;
-    const [lo, hi] = this.sRange(side);
+    const [lo, hi] = this.sRange();
     this.pos = this.surfacePos(side, clamp(s ?? this.sOf(side), lo, hi));
     this.vel = { x: 0, y: 0 };
     if (!keepRot) {
@@ -1741,10 +1893,8 @@ export class Pet {
   }
 
   private clampInside() {
-    const { left, top, right, bottom } = this.bounds;
     const r = Math.max(this.halfW, this.halfH);
-    this.pos.x = clamp(this.pos.x, left + r, Math.max(left + r, right - r));
-    this.pos.y = clamp(this.pos.y, top + r, Math.max(top + r, bottom - r));
+    this.pos = keepInside(this.world, this.pos, r, r);
   }
 
   private kickSquash(speed: number, side: Side) {

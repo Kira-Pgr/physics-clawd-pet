@@ -1,14 +1,17 @@
-//! 桌面观察线程：在原生侧轮询光标、窗口和全屏状态，只在有变化时通知前端。
+//! 桌面观察线程：在原生侧轮询光标、窗口、屏幕和全屏状态，只在有变化时通知前端。
 //! 以前前端每帧都要 IPC 查一次光标，现在空闲时几乎没有 IPC。
+//!
+//! 覆盖层也归它摆：铺满所有能去的屏幕（工作区的外接矩形），屏幕插拔、改排列、
+//! 某块屏幕上开了全屏程序时重新摆，并告诉前端坐标怎么换算（desk-screens）。
 
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::desktop::{self, Rect, Segment};
+use crate::desktop::{self, Layout, Rect, Screen, Segment};
 use crate::platform;
 
 pub const OVERLAY: &str = "overlay";
@@ -26,6 +29,26 @@ pub struct DeskState {
     pub resync: bool,
     /// 同上，给输入框检测线程用
     pub input_resync: bool,
+    /// 覆盖层现在铺在哪儿：输入框检测线程换算坐标用
+    pub overlay: Option<OverlayGeo>,
+}
+
+#[derive(Clone, Copy)]
+pub struct OverlayGeo {
+    /// 覆盖层（物理像素）
+    pub area: Rect,
+    pub scale: f64,
+    /// 最小的那块屏幕的工作区：判断"输入框大得躲不开"用（几块屏幕加起来比就太宽松了）
+    pub screen: Rect,
+}
+
+fn overlay_geo(area: Rect, scale: f64, screens: &[Screen]) -> OverlayGeo {
+    let screen = screens
+        .iter()
+        .map(|s| s.work)
+        .min_by_key(|r| r.width() as i64 * r.height() as i64)
+        .unwrap_or(area);
+    OverlayGeo { area, scale, screen }
 }
 
 pub type Shared = Arc<Mutex<DeskState>>;
@@ -61,8 +84,32 @@ struct PointMsg {
     y: f64,
 }
 
+/// 一块能去的屏幕的工作区（覆盖层 CSS 像素）
+#[derive(Serialize, Clone)]
+struct ScreenMsg {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+    primary: bool,
+}
+
+/// 覆盖层挪了：旧 CSS 坐标 × k + (dx, dy) = 新 CSS 坐标
+#[derive(Serialize, Clone)]
+struct RemapMsg {
+    k: f64,
+    dx: f64,
+    dy: f64,
+}
+
+#[derive(Serialize, Clone)]
+struct ScreensMsg {
+    screens: Vec<ScreenMsg>,
+    remap: Option<RemapMsg>,
+}
+
 /// 物理像素 ↔ 覆盖层 CSS 像素
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Geometry {
     area: Rect,
     scale: f64,
@@ -75,19 +122,40 @@ impl Geometry {
     fn y(&self, py: i32) -> f64 {
         (py - self.area.top) as f64 / self.scale
     }
+    fn screens(&self, list: &[Screen], remap: Option<RemapMsg>) -> ScreensMsg {
+        let screens = list
+            .iter()
+            .map(|s| ScreenMsg {
+                left: self.x(s.work.left),
+                top: self.y(s.work.top),
+                right: self.x(s.work.right),
+                bottom: self.y(s.work.bottom),
+                primary: s.primary,
+            })
+            .collect();
+        ScreensMsg { screens, remap }
+    }
 }
 
-pub fn spawn(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
+/// layout：建覆盖层时摆好的样子
+pub fn spawn(app: AppHandle, shared: Shared, overlay_id: isize, layout: Layout) {
     thread::Builder::new()
         .name("desk-watcher".into())
-        .spawn(move || run(app, shared, overlay_id, area))
+        .spawn(move || run(app, shared, overlay_id, layout))
         .expect("failed to spawn desk watcher");
 }
 
-fn run(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
+fn run(app: AppHandle, shared: Shared, overlay_id: isize, layout: Layout) {
     let start = Instant::now();
     let ms = || start.elapsed().as_secs_f64() * 1000.0;
-    let mut geo = Geometry { area, scale: platform::window_scale(overlay_id) };
+    let mut geo = Geometry { area: layout.rect, scale: platform::window_scale(overlay_id) };
+    shared.lock().unwrap().overlay = Some(overlay_geo(geo.area, geo.scale, &layout.screens));
+    // 前端现在知道的屏幕（坐标按 geo 算的）
+    let mut active: Vec<Screen> = layout.screens;
+    let mut fullscreen_monitors: Vec<Rect> = Vec::new();
+    // 所有屏幕都被全屏程序占了
+    let mut all_fullscreen = false;
+    let mut last_layout_check: Option<Instant> = None;
 
     let mut ignoring = true;
     let mut hover = false;
@@ -96,9 +164,7 @@ fn run(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
     let mut segments: Vec<Segment> = Vec::new();
     let mut last_enum: Option<Instant> = None;
     let mut last_fullscreen_check: Option<Instant> = None;
-    let mut fullscreen = false;
     let mut hidden = false;
-    let mut last_area_check = start;
     let mut carrier_rect: Option<(isize, Rect)> = None;
 
     loop {
@@ -113,39 +179,68 @@ fn run(app: AppHandle, shared: Shared, overlay_id: isize, area: Rect) {
         let now = Instant::now();
         let mut force_platforms = resync;
 
+        // 哪几块屏幕上有全屏程序（每 0.5 秒）
+        let mut fullscreen_changed = false;
+        if last_fullscreen_check.map_or(true, |t| now - t >= Duration::from_millis(500)) {
+            last_fullscreen_check = Some(now);
+            let f = platform::fullscreen_monitors(overlay_id);
+            if f != fullscreen_monitors {
+                fullscreen_monitors = f;
+                fullscreen_changed = true;
+            }
+        }
+
+        // 屏幕布局（每秒；全屏状态变了马上）：插拔显示器、改分辨率/缩放/排列、挪任务栏
+        if fullscreen_changed || last_layout_check.map_or(true, |t| now - t >= Duration::from_secs(1)) {
+            last_layout_check = Some(now);
+            match desktop::layout(&platform::screens(), &fullscreen_monitors) {
+                None => all_fullscreen = true,
+                Some(l) => {
+                    all_fullscreen = false;
+                    // 被别的东西改了位置/大小（比如系统调整）也摆回去
+                    let moved = platform::frame_bounds(overlay_id).is_some_and(|r| {
+                        (r.left - l.rect.left).abs() > 2
+                            || (r.top - l.rect.top).abs() > 2
+                            || (r.right - l.rect.right).abs() > 2
+                            || (r.bottom - l.rect.bottom).abs() > 2
+                    });
+                    if l.rect != geo.area || moved {
+                        let _ = platform::place_overlay(&win, l.rect);
+                    }
+                    let next = Geometry { area: l.rect, scale: platform::window_scale(overlay_id) };
+                    if next != geo || l.screens != active {
+                        let (k, dx, dy) = desktop::remap(geo.area, geo.scale, next.area, next.scale);
+                        geo = next;
+                        active = l.screens;
+                        {
+                            let mut s = shared.lock().unwrap();
+                            s.overlay = Some(overlay_geo(geo.area, geo.scale, &active));
+                            s.input_resync = true;
+                        }
+                        let _ = app.emit_to(OVERLAY, "desk-screens", geo.screens(&active, Some(RemapMsg { k, dx, dy })));
+                        force_platforms = true;
+                        carrier_rect = None;
+                    }
+                }
+            }
+        }
+
         if resync {
             // 前端重新加载过：不能信任之前的穿透状态，强制重设
             ignoring = !(hover || dragging);
             let _ = win.set_ignore_cursor_events(ignoring);
+            let _ = app.emit_to(OVERLAY, "desk-screens", geo.screens(&active, None));
             let _ = app.emit_to(OVERLAY, "desk-dnd", DndMsg { hidden, reason: "sync" });
             let _ = app.emit_to(OVERLAY, "desk-hover", hover);
             carrier_rect = None;
         }
 
-        // 工作区或缩放变了（换分辨率、挪任务栏）：覆盖层跟着调整
-        if now - last_area_check >= Duration::from_secs(1) {
-            last_area_check = now;
-            if let Some(a) = platform::primary_work_area() {
-                let scale = platform::window_scale(overlay_id);
-                if a != geo.area || (scale - geo.scale).abs() > 1e-6 {
-                    geo = Geometry { area: a, scale };
-                    let _ = win.set_position(PhysicalPosition::new(a.left, a.top));
-                    let _ = win.set_size(PhysicalSize::new(a.width() as u32, a.height() as u32));
-                    force_platforms = true;
-                }
-            }
-        }
-
-        // 全屏免打扰
-        if last_fullscreen_check.map_or(true, |t| now - t >= Duration::from_millis(500)) {
-            last_fullscreen_check = Some(now);
-            fullscreen = platform::fullscreen_on_primary(overlay_id);
-        }
-        let want_hidden = fullscreen || manual_hidden;
+        // 全屏免打扰：所有屏幕都被全屏程序占了才整个藏起来（只占了一块的话，那块已经不在覆盖层里了）
+        let want_hidden = all_fullscreen || manual_hidden;
         if want_hidden != hidden {
             hidden = want_hidden;
             let _ = if hidden { win.hide() } else { win.show() };
-            let reason = if fullscreen { "fullscreen" } else { "manual" };
+            let reason = if all_fullscreen { "fullscreen" } else { "manual" };
             let _ = app.emit_to(OVERLAY, "desk-dnd", DndMsg { hidden, reason });
         }
         if hidden {

@@ -531,6 +531,20 @@ export class Renderer {
         ctx.strokeRect(z.left * d, z.top * d, (z.right - z.left) * d, (z.bottom - z.top) * d);
         this.markDirty(z.left * d - 2, z.top * d - 2, (z.right - z.left) * d + 4, (z.bottom - z.top) * d + 4);
       }
+      // 屏幕边框（多块屏幕拼出来的）：青色；正贴着的那段加粗
+      for (const g of pet.world.segs) {
+        const on = g === pet.seg;
+        const t = Math.max(1, Math.round((on ? 3 : 1.5) * d));
+        const horizontal = g.side === 'floor' || g.side === 'ceiling';
+        // 画在屏幕里侧，不然贴边的线画到屏幕外面去了
+        const inward = g.side === 'floor' || g.side === 'right' ? -t : 0;
+        const [x, y, w, h] = horizontal
+          ? [g.a * d, g.c * d + inward, (g.b - g.a) * d, t]
+          : [g.c * d + inward, g.a * d, t, (g.b - g.a) * d];
+        ctx.fillStyle = on ? '#06b6d4' : 'rgba(6, 182, 212, 0.7)';
+        ctx.fillRect(x, y, w, h);
+        this.markDirty(x, y, w, h);
+      }
       // 可站的窗口顶边：绿色；脚下那段：橙色
       for (const p of pet.platforms) {
         const on = pet.support !== null && pet.support.id === p.id && pet.pos.x >= p.x0 && pet.pos.x <= p.x1;

@@ -5,6 +5,7 @@ import { clamp, rand } from '../engine/math';
 import { mergeTuning, type Tuning } from '../engine/params';
 import type { ParticleSystem } from '../engine/particles';
 import { type Activity, type Bounds, Pet, type Platform } from '../engine/pet';
+import type { World } from '../engine/world';
 import type { Vec2 } from '../engine/math';
 
 /** 同时最多几只（再多就挤满屏了） */
@@ -25,9 +26,9 @@ export class Minis {
   private list: Mini[] = [];
   private t = 0;
   /** 上次同步给小家伙们的主宠物状态（引用比较，变了才同步） */
-  private synced: { tuning: Tuning | null; bounds: Bounds | null; platforms: Platform[] | null; zone: Bounds | null } = {
+  private synced: { tuning: Tuning | null; world: World | null; platforms: Platform[] | null; zone: Bounds | null } = {
     tuning: null,
-    bounds: null,
+    world: null,
     platforms: null,
     zone: null,
   };
@@ -52,14 +53,16 @@ export class Minis {
     if (this.list.filter((m) => m.leftAt === null).length >= MAX) return;
     const main = this.main;
     const { pixelArt, dpr } = this.look();
-    const pet = new Pet(this.tuning(), main.grid, main.bounds);
+    const pet = new Pet(this.tuning(), main.grid, [...main.screens]);
+    pet.setWorld(main.world);
     pet.setPixelRatio(dpr);
     const actions: Activity[] = ['laptop'];
     pet.setGrid(main.grid, { pixelArt, actions });
     pet.setPlatforms(main.platforms);
     pet.setInputZone(main.inputZone);
     pet.setAgentMood('working');
-    const b = main.bounds;
+    // 主宠物所在的那块屏幕
+    const b = main.screen;
     // 在主宠物附近挑几个落点，选离已有的小家伙最远的，别叠在一起
     const others = this.list.map((m) => m.pet.pos.x).concat(main.pos.x);
     let x = main.pos.x;
@@ -94,6 +97,11 @@ export class Minis {
     for (const m of this.list) m.pet.setGrid(this.main.grid, { pixelArt, actions: ['laptop'] });
   }
 
+  /** 覆盖层坐标变了（见 Pet.remap）；屏幕在下一次 step 里跟着主宠物同步 */
+  remap(k: number, dx: number, dy: number) {
+    for (const m of this.list) m.pet.remap(k, dx, dy);
+  }
+
   /** 全部收工（会话结束、关掉联动） */
   clear() {
     for (const m of this.list) this.dismiss(m.id);
@@ -115,7 +123,7 @@ export class Minis {
     });
   }
 
-  /** 主宠物的手感参数、屏幕范围、窗口平台、输入框变了：小家伙们跟着变 */
+  /** 主宠物的手感参数、屏幕、窗口平台、输入框变了：小家伙们跟着变 */
   private sync() {
     const main = this.main;
     const s = this.synced;
@@ -128,9 +136,9 @@ export class Minis {
         m.pet.setPixelRatio(dpr);
       }
     }
-    if (s.bounds !== main.bounds) {
-      s.bounds = main.bounds;
-      for (const m of this.list) m.pet.setBounds(main.bounds);
+    if (s.world !== main.world) {
+      s.world = main.world;
+      for (const m of this.list) m.pet.setWorld(main.world);
     }
     if (s.platforms !== main.platforms) {
       s.platforms = main.platforms;

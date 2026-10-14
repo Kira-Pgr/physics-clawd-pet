@@ -10,14 +10,14 @@ use objc2::sel;
 use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 use objc2_core_foundation::{CFArray, CFLocale, CFRetained, CFString};
 use tauri::image::Image;
-use tauri::{ActivationPolicy, Manager, WebviewWindow};
+use tauri::{ActivationPolicy, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
+use crate::desktop::Rect;
 use crate::lang::Lang;
 
 pub use assist::{decode_system_codepage, http_get, idle_ms, pick_ics};
 pub use desktop::{
-    cursor_pos, frame_bounds, fullscreen_on_primary, primary_work_area, visible_windows, window_for_pids,
-    window_scale,
+    cursor_pos, frame_bounds, fullscreen_monitors, screens, visible_windows, window_for_pids, window_scale,
 };
 pub use input::{input_permission, request_input_permission, InputProbe};
 
@@ -67,6 +67,12 @@ pub fn prepare_overlay(win: &WebviewWindow) -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+/// 把覆盖层摆到 r（物理像素）。只铺主屏，不会跨缩放不同的屏幕，分两步设没关系
+pub fn place_overlay(win: &WebviewWindow, r: Rect) -> tauri::Result<()> {
+    win.set_position(PhysicalPosition::new(r.left, r.top))?;
+    win.set_size(PhysicalSize::new(r.width().max(1) as u32, r.height().max(1) as u32))
 }
 
 /// 菜单栏图标：Clawd 的剪影（眼睛挖空），系统按浅色/深色菜单栏自己上色（template image）。
