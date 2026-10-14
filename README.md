@@ -16,9 +16,9 @@ Grab it, fling it across your screen, and watch it tumble, superhero-land, or st
 [English](#english) · [中文](#中文)
 
 
-![clawd-jump](skins\clawd\gif\clawd-jump.gif)
-![clawd-tumble](skins\clawd\gif\clawd-tumble.gif)
-![clawd-look](skins\clawd\gif\clawd-look.gif)
+![clawd-jump](skins/clawd/gif/clawd-jump.gif)
+![clawd-tumble](skins/clawd/gif/clawd-tumble.gif)
+![clawd-look](skins/clawd/gif/clawd-look.gif)
 
 
 
